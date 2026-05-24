@@ -1,20 +1,21 @@
---------------------- MODULE MC_NaivePromiseResolution ---------------------
+---------------------- MODULE MC_EJavaFlush_4Chain ----------------------
 (***************************************************************************)
-(* Model-check PromiseResolution under NaivePromiseResolution routing.     *)
-(* ChainLength = 2; HeadPeer=vatA sends on p1; host[1]=vatB holds resolver; *)
-(* host[2]=vatA holds terminal (classic naive race vs cross-vat notify).   *)
-(* Expected: EndToEndRefFIFO_MC violated (head learns resolution, local    *)
-(* shortcut races pipelined op:deliver-only on ref 1).                     *)
+(* Same topology as MC_ShorteningUnsafe_4Chain.                             *)
+(* CANONICAL EJavaFlush (DelayedRedirector): embargo lifts on a LOCAL       *)
+(* signal — host[1] reports its ref-1 queue drained.  Expected:             *)
+(* EndToEndRefFIFO_MC is VIOLATED when shortenEntry > 2, because the local *)
+(* signal does not account for messages still in flight on                 *)
+(* channels[host[1]][host[2]] (and further downstream).                    *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
-Peers == {"vatA", "vatB"}
+Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
-ChainLength == 2
+ChainLength == 4
 NumMessages == 3
 ExtraOps == {}
-RoutingPolicy == "NaivePromiseResolution"
+RoutingPolicy == "EJavaFlush"
 DebugTrace == FALSE
 
 VARIABLES
@@ -64,8 +65,7 @@ PS ==
 
 Init ==
     /\ PS!Init
-    /\ host[1] = "vatB"
-    /\ host[2] = "vatA"
+    /\ host = <<"vatB", "vatC", "vatD", "vatE">>
 
 Next ==
     \/ PS!PeerSend

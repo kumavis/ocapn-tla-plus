@@ -23,11 +23,17 @@ VARIABLES
     pending,
     sent,
     delivered,
-    lastAction
+    lastAction,
+    shortenActive,
+    shortenEntry,
+    headPipelined,
+    headEmbargo,
+    opFlushPhase
 
 vars ==
     << channels, host, resolved, knownByPeer,
-       localQueues, pending, sent, delivered, lastAction >>
+       localQueues, pending, sent, delivered, lastAction,
+       shortenActive, shortenEntry, headPipelined, headEmbargo, opFlushPhase >>
 
 PS ==
     INSTANCE PromiseResolution WITH
@@ -46,7 +52,12 @@ PS ==
         pending <- pending,
         sent <- sent,
         delivered <- delivered,
-        lastAction <- lastAction
+        lastAction <- lastAction,
+        shortenActive <- shortenActive,
+        shortenEntry <- shortenEntry,
+        headPipelined <- headPipelined,
+        headEmbargo <- headEmbargo,
+        opFlushPhase <- opFlushPhase
 
 Init ==
     /\ PS!Init
@@ -59,6 +70,8 @@ Next ==
     \/ PS!ResolverResolve
     \/ PS!ReceiveNetwork
     \/ PS!ProcessPending
+    \/ PS!Shorten
+    \/ PS!EJavaRelease
 
 Spec == Init /\ [][Next]_vars
 

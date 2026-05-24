@@ -1,20 +1,19 @@
---------------------- MODULE MC_NaivePromiseResolution ---------------------
+------------------- MODULE MC_ShorteningUnsafe_4Chain -------------------
 (***************************************************************************)
-(* Model-check PromiseResolution under NaivePromiseResolution routing.     *)
-(* ChainLength = 2; HeadPeer=vatA sends on p1; host[1]=vatB holds resolver; *)
-(* host[2]=vatA holds terminal (classic naive race vs cross-vat notify).   *)
-(* Expected: EndToEndRefFIFO_MC violated (head learns resolution, local    *)
-(* shortcut races pipelined op:deliver-only on ref 1).                     *)
+(* ChainLength = 4 (three promises + terminal), four distinct peers.       *)
+(* Unsafe promise shortening: Shorten may fire after resolved[1]..[k-1];   *)
+(* then shortcut sends skip intermediaries — breaks EndToEndRefFIFO when   *)
+(* pipelined op:deliver-only still in flight (cf. ocapn/ocapn#11).          *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
-Peers == {"vatA", "vatB"}
+Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
-ChainLength == 2
-NumMessages == 3
+ChainLength == 4
+NumMessages == 5
 ExtraOps == {}
-RoutingPolicy == "NaivePromiseResolution"
+RoutingPolicy == "ShorteningUnsafe"
 DebugTrace == FALSE
 
 VARIABLES
@@ -64,8 +63,7 @@ PS ==
 
 Init ==
     /\ PS!Init
-    /\ host[1] = "vatB"
-    /\ host[2] = "vatA"
+    /\ host = <<"vatB", "vatC", "vatD", "vatE">>
 
 Next ==
     \/ PS!PeerSend

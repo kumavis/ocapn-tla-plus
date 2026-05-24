@@ -8,8 +8,10 @@
 #   violation - model checking finds an invariant violation
 #
 #   ./scripts/run-tests.sh --debug MC_NaivePromiseResolution
-# runs models/MC_NaivePromiseResolution_Debug.tla (must exist), writes
-# .tlc-logs/<name>.log and .tlc-logs/<name>.trace.md (mermaid).
+#   ./scripts/run-tests.sh --debug MC_EJavaFlush_4Chain
+#   ./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Chain
+# runs models/<name>_Debug.tla + .cfg, writes .tlc-logs/<name>.debug.log and
+# .tlc-logs/<name>.trace.md (mermaid).
 #
 # Defaults TLA jar location to ~/tla/tla2tools.jar; override with TLA_JAR.
 
@@ -67,6 +69,10 @@ TESTS=(
   "MC_NaivePromiseResolution|violation"
   "MC_NoPromiseResolution|pass"
   "MC_NoPromiseResolution_3Chain|pass"
+  "MC_ShorteningUnsafe_4Chain|violation"
+  "MC_EJavaFlush_4Chain|violation"
+  "MC_EJavaFlushGlobal_4Chain|pass"
+  "MC_OpFlushProtocol_4Chain|pass"
 )
 
 FAIL=0

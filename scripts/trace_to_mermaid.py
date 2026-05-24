@@ -174,6 +174,15 @@ def summarize_msg(msg: str) -> str:
             f'op:deliver-only(seq={seq.group(1) if seq else "?"}, '
             f'ref={ref.group(1) if ref else "?"}, pos={pos.group(1) if pos else "?"})'
         )
+    if op == "op:flush-fwd":
+        t = re.search(r"target\s*\|\->\s*(\d+)", msg)
+        h = re.search(r"hop\s*\|\->\s*(\d+)", msg)
+        return (
+            f'op:flush-fwd(target={t.group(1) if t else "?"}, '
+            f'hop={h.group(1) if h else "?"})'
+        )
+    if op == "op:flush-ack":
+        return "op:flush-ack"
     return op
 
 
@@ -240,10 +249,16 @@ def note_from_last_action(fields: dict[str, str]) -> str | None:
         ref = fields.get("ref", "?")
         act = fields.get("actor", "?")
         res = fields.get("resolver", "?")
+        se = fields.get("shortenEntry", "?")
         if tag == "local":
             return (
                 f"Note over {esc(act)}: PeerSend local seq={esc(seq)} ref={esc(ref)} "
                 f"(naive shortcut to terminal; can race pipelined lower seq still in flight)"
+            )
+        if tag == "shortcut":
+            return (
+                f"Note over {esc(act)}: PeerSend shortcut seq={esc(seq)} ref-{esc(ref)} "
+                f"to shortenEntry={esc(se)} (post-shortening path)"
             )
         return (
             f"Note over {esc(act)},{esc(res)}: PeerSend viaResolver seq={esc(seq)} ref-{esc(ref)} "
@@ -294,8 +309,34 @@ def note_from_last_action(fields: dict[str, str]) -> str | None:
                 f"Note over {esc(to)}: ReceiveNetwork {esc(kind)} "
                 f"{esc(fro)}->{esc(to)}"
             )
+        if kind in ("flush-fwd", "flush-ack-send", "flush-ack-head"):
+            hop = fields.get("hop", "?")
+            tgt = fields.get("target", "?")
+            return (
+                f"Note over {esc(fro)},{esc(to)}: op:flush {esc(kind)} "
+                f"hop={esc(hop)} target={esc(tgt)}"
+            )
         return None
-    return f"Note over TLC: {esc(name)}"
+    if name == "Shorten":
+        pol = fields.get("policy", "?")
+        ent = fields.get("entry", "?")
+        pipe = fields.get("pipelined", "?")
+        head = fields.get("actor", "?")
+        return (
+            f"Note over {esc(head)}: Shorten policy={esc(pol)} "
+            f"entry={esc(ent)} headPipelined={esc(pipe)}"
+        )
+    if name == "EJavaRelease":
+        ent = fields.get("entry", "?")
+        head = fields.get("actor", "?")
+        return (
+            f"Note over {esc(head)}: EJavaRelease lift embargo, "
+            f"shortenEntry={esc(ent)} (local signal: pending[host[1]][1] = 0)"
+        )
+    actor = fields.get("actor")
+    if actor:
+        return f"Note over {esc(actor)}: {esc(name)}"
+    return None
 
 
 def extract_delivered_seq_order(block: str) -> list[int]:
@@ -384,7 +425,7 @@ if parts:
             hi, lo = inv
             story = (
                 f" First inversion: seq {hi} before seq {lo} (higher seq applied first — "
-                f"naive shortcut can beat pipelined lower seq still in flight)."
+                f"often parallel FIFO edges or a post-resolution shortcut racing in-flight traffic)."
             )
         lines_out.append(
             f"    Note over {esc(a)},{esc(b)}: EndToEndRefFIFO violated: "

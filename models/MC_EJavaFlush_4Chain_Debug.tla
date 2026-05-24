@@ -1,21 +1,18 @@
---------------------- MODULE MC_NaivePromiseResolution ---------------------
+------------------ MODULE MC_EJavaFlush_4Chain_Debug ------------------
 (***************************************************************************)
-(* Model-check PromiseResolution under NaivePromiseResolution routing.     *)
-(* ChainLength = 2; HeadPeer=vatA sends on p1; host[1]=vatB holds resolver; *)
-(* host[2]=vatA holds terminal (classic naive race vs cross-vat notify).   *)
-(* Expected: EndToEndRefFIFO_MC violated (head learns resolution, local    *)
-(* shortcut races pipelined op:deliver-only on ref 1).                     *)
+(* Same as MC_EJavaFlush_4Chain (canonical / local) with DebugTrace TRUE.   *)
+(* Used by run-tests.sh --debug to render a mermaid trace of the violation.*)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
-Peers == {"vatA", "vatB"}
+Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
-ChainLength == 2
+ChainLength == 4
 NumMessages == 3
 ExtraOps == {}
-RoutingPolicy == "NaivePromiseResolution"
-DebugTrace == FALSE
+RoutingPolicy == "EJavaFlush"
+DebugTrace == TRUE
 
 VARIABLES
     channels,
@@ -64,8 +61,7 @@ PS ==
 
 Init ==
     /\ PS!Init
-    /\ host[1] = "vatB"
-    /\ host[2] = "vatA"
+    /\ host = <<"vatB", "vatC", "vatD", "vatE">>
 
 Next ==
     \/ PS!PeerSend

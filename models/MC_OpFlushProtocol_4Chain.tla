@@ -1,20 +1,18 @@
---------------------- MODULE MC_NaivePromiseResolution ---------------------
+------------------ MODULE MC_OpFlushProtocol_4Chain ------------------
 (***************************************************************************)
-(* Model-check PromiseResolution under NaivePromiseResolution routing.     *)
-(* ChainLength = 2; HeadPeer=vatA sends on p1; host[1]=vatB holds resolver; *)
-(* host[2]=vatA holds terminal (classic naive race vs cross-vat notify).   *)
-(* Expected: EndToEndRefFIFO_MC violated (head learns resolution, local    *)
-(* shortcut races pipelined op:deliver-only on ref 1).                     *)
+(* Ridley-style op:flush-fwd along host[1]..host[k-1], then ack to Head.   *)
+(* Shorten with headPipelined starts the flush chain before shortcut.       *)
+(* Expected: EndToEndRefFIFO_MC holds.                                     *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
-Peers == {"vatA", "vatB"}
+Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
-ChainLength == 2
+ChainLength == 4
 NumMessages == 3
 ExtraOps == {}
-RoutingPolicy == "NaivePromiseResolution"
+RoutingPolicy == "OpFlushProtocol"
 DebugTrace == FALSE
 
 VARIABLES
@@ -64,8 +62,7 @@ PS ==
 
 Init ==
     /\ PS!Init
-    /\ host[1] = "vatB"
-    /\ host[2] = "vatA"
+    /\ host = <<"vatB", "vatC", "vatD", "vatE">>
 
 Next ==
     \/ PS!PeerSend
