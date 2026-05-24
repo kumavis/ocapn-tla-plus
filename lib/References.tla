@@ -1,54 +1,54 @@
 --------------------------- MODULE References ---------------------------
 (***************************************************************************)
-(* Objects, promises, static topology (who hosts what, who resolves what),  *)
-(* and global resolution state.  Resolution targets are objects only in    *)
-(* this iteration; promise-to-promise targets are reserved for extending    *)
-(* chain shortening later without restructuring pending/delivery.           *)
+(* Linear ref-chain: positions 1 .. ChainLength-1 are promises;            *)
+(* position ChainLength is the terminal object.  Promise i resolves to     *)
+(* i+1 (implicit).  host[i] is the peer that holds the resolver for i      *)
+(* (promises) or hosts the terminal object (terminal position).            *)
+(*                                                                         *)
+(* CONSTANT HeadPeer: vat that originates op:deliver-only on ref 1          *)
+(* (chain client).  host[1] is resolver-holder for promise 1; HeadPeer    *)
+(* may differ from host[1] (two-vat promise pipelining).                    *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences
 
-CONSTANT Peers, Objects, Promises, UNRESOLVED
-
-RefSpace == Objects \cup Promises
+CONSTANT Peers, ChainLength, HeadPeer
 
 ASSUME Peers # {}
-ASSUME Objects # {}
-ASSUME Promises # {}
-ASSUME Objects \cap Promises = {}
-ASSUME UNRESOLVED \notin RefSpace
+ASSUME HeadPeer \in Peers
+ASSUME /\ ChainLength \in Nat
+       /\ ChainLength >= 2
+
+Refs == 1..ChainLength
+TerminalPos == ChainLength
+PromiseRefs == 1..(ChainLength - 1)
+
+IsObject(r) == r = TerminalPos
+IsPromise(r) == r \in PromiseRefs
 
 VARIABLES
-    objHost,       \* [Objects -> Peers]
-    promResolver,  \* [Promises -> Peers]
-    resolution,    \* [Promises -> RefSpace \cup {UNRESOLVED}]; object targets only for now
-    knownByPeer    \* [Peers -> [Promises -> BOOLEAN]] has this peer learned the resolution?
-
-IsObject(r) == r \in Objects
-IsPromise(r) == r \in Promises
+    host,          \* [Refs -> Peers]
+    resolved,      \* [PromiseRefs -> BOOLEAN]
+    knownByPeer    \* [Peers -> [PromiseRefs -> BOOLEAN]]
 
 ReferencesInit ==
-    /\ objHost \in [Objects -> Peers]
-    /\ promResolver \in [Promises -> Peers]
-    /\ resolution = [pr \in Promises |-> UNRESOLVED]
-    /\ knownByPeer = [p \in Peers |-> [pr \in Promises |-> FALSE]]
+    /\ host \in [Refs -> Peers]
+    /\ resolved = [pr \in PromiseRefs |-> FALSE]
+    /\ knownByPeer = [p \in Peers |-> [pr \in PromiseRefs |-> FALSE]]
 
-RECURSIVE TerminalRef(_)
-TerminalRef(r) ==
+RECURSIVE TerminalOf(_)
+TerminalOf(r) ==
     IF IsObject(r) THEN r
     ELSE
-        IF resolution[r] = UNRESOLVED THEN r
-        ELSE TerminalRef(resolution[r])
+        IF ~resolved[r] THEN r
+        ELSE TerminalOf(r + 1)
 
-HostOfTerminal(r) ==
-    LET t == TerminalRef(r) IN
-        IF IsObject(t) THEN objHost[t]
-        ELSE promResolver[t]
+HostOfTerminalOf(r) == host[TerminalOf(r)]
 
 ReferencesTypeOK ==
-    /\ objHost \in [Objects -> Peers]
-    /\ promResolver \in [Promises -> Peers]
-    /\ resolution \in [Promises -> RefSpace \cup {UNRESOLVED}]
-    /\ knownByPeer \in [Peers -> [Promises -> BOOLEAN]]
+    /\ HeadPeer \in Peers
+    /\ host \in [Refs -> Peers]
+    /\ resolved \in [PromiseRefs -> BOOLEAN]
+    /\ knownByPeer \in [Peers -> [PromiseRefs -> BOOLEAN]]
 
 ============================================================================

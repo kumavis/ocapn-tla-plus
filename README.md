@@ -1,93 +1,89 @@
-# TLA+: OCapN promise resolution, pipelining, and `EndToEndRefFIFO`
+# TLA+: ref-chain promise resolution, pipelining, and `EndToEndRefFIFO`
 
-Modular TLA+ specs for **promise resolution** (here: a promise resolves to a
-**remotable object**) plus pipelined **`op:deliver-only`**, with **per-pair
-FIFO** transport between peers.
+Modular TLA+ specs for a **linear ref-chain**: positions `1 .. ChainLength-1`
+are promises, position `ChainLength` is the terminal object. Promise `i`
+resolves implicitly to `i+1`. Each position `i` has a **host peer**
+`host[i]` (resolver-holder for promises, object host for the terminal).
+**Only the head peer** `host[1]` originates **`op:deliver-only`**, and only
+on reference `1`; downstream hops **forward** the same message (same
+`sender` / `seq` / `sentOnRef`) along the chain. Other wire messages (today:
+`op:resolve-notify` from each resolver when it resolves) are sent by the
+appropriate chain nodes.
 
 Routing is selected by the **`RoutingPolicy`** constant in
 [`spec/PromiseResolution.tla`](spec/PromiseResolution.tla) (wired from each
-MC module). The values match the protocol-module names:
+MC module):
 
-- **`"NaivePromiseResolution"`** — after a peer learns a promise's resolution,
-  sends on that **same promise reference** may take a local path to the
-  terminal object when it is co-located with the sender (can break
-  `EndToEndRefFIFO`).
-- **`"NoPromiseResolution"`** — every send on a promise **always** goes via
-  the resolver (`viaResolver`); no post-resolution shortcut. All calls remain
-  pipelined on the original path.
+- **`"NaivePromiseResolution"`** — after the head has learned resolutions
+  along the whole chain, sends on ref `1` may take a **local** path to the
+  terminal when it is co-located with the head (can break `EndToEndRefFIFO`).
+- **`"NoPromiseResolution"`** — every send on ref `1` always goes
+  **`viaResolver`** (queued or forwarded at `host[1]`); no post-resolution
+  local shortcut.
 
-"Pipelining" here means a sender may emit `op:deliver-only` on a promise
-**before** the promise is resolved. Both policies pipeline; they differ only
-in what happens after resolution.
-
-**Shortening** in the broader protocol sense (chain shortening when a
-promise resolves to another promise) is **not** modeled yet; it can be a
-separate protocol module later.
+**Primary knob:** `ChainLength` (with `Peers` fixed in the MC). Re-using the
+same peer at several positions (`host` repeats a peer) models chains that
+**loop through a node** without cyclic resolution.
 
 ## Message ordering: `EndToEndRefFIFO`
 
-The property checked here is **only**:
-
 > For a **fixed sender peer** and a **fixed reference** `R`, every
 > `op:deliver-only` that peer sends **on `R`** is applied at the terminal
-> value of `R` in **strictly increasing send order** (by the model's
-> per-(peer, `R`) sequence numbers).
+> value of `R` in **strictly increasing send order** (by the model’s sequence
+> numbers).
 
-There is **no** claim about:
+With the current “head-only sender” model, the only originator is
+`(sender, ref) = (host[1], 1)`; the invariant is equivalent to “`delivered`
+entries for that pair have strictly increasing `seq`.”
 
-- messages from **different** senders, or
-- **order across different references** — for example sends on a promise
-  and sends on whatever it resolved to are two separate streams; the
-  invariant does not relate them.
+There is **no** claim about order across different senders or different
+references.
 
 Wire messages use OCapN-shaped names (`op:deliver-only`, `op:listen`,
-`op:resolve-notify`). `op:resolve-notify` is a real wire message in this
-model: the resolver appends it to every other peer's channel at the moment
-of resolution. `op:listen` is named but not yet exercised; see *Variant
-ideas* below.
+`op:resolve-notify`). `op:resolve-notify` carries only the promise index; the
+resolution target is implicit (`i` resolves to `i+1`). `op:listen` is named but
+not exercised; see *Variant ideas* below.
 
 ## Layout
 
 ```
 ocapn-tla-plus/
-├── lib/                       # Foundation modules (no protocol semantics)
-│   ├── References.tla         # Objects, Promises, topology, resolution chain
+├── lib/
+│   ├── References.tla         # ChainLength, host, resolved, knownByPeer
 │   ├── Network.tla            # Per-pair FIFO channels
 │   └── PeerState.tla          # localQueues, pending, sent, delivered
-├── protocols/                 # Stateless routing helpers
+├── protocols/
 │   ├── NaivePromiseResolution.tla
 │   └── NoPromiseResolution.tla
 ├── spec/
-│   └── PromiseResolution.tla  # Top-level Init/Next/Spec + EndToEndRefFIFO
-├── models/                    # One MC module + cfg per scenario
-│   ├── MC_NaivePromiseResolution.tla
-│   ├── MC_NaivePromiseResolution.cfg
-│   ├── MC_NoPromiseResolution.tla
-│   └── MC_NoPromiseResolution.cfg
-├── notes/                     # Trace narratives, design notes
+│   └── PromiseResolution.tla  # Init/Next/Spec + EndToEndRefFIFO + lastAction
+├── models/
+│   ├── MC_NaivePromiseResolution.tla / .cfg
+│   ├── MC_NaivePromiseResolution_Debug.tla / .cfg   (DebugTrace TRUE)
+│   ├── MC_NoPromiseResolution.tla / .cfg
+│   └── MC_NoPromiseResolution_3Chain.tla / .cfg
+├── notes/
 │   └── counterexample-naive-promise-resolution.txt
 └── scripts/
-    └── run-tests.sh           # Runs every MC, classifies outcomes
+    ├── run-tests.sh           # Matrix + optional --debug
+    ├── trace-to-mermaid.sh    # Wrapper → trace_to_mermaid.py
+    └── trace_to_mermaid.py    # TLC log → mermaid sequenceDiagram
 ```
 
-TLC finds modules by directory + Java classpath; the script wires
-`lib:protocols:spec:models` into `-cp` so every module is reachable.
+TLC classpath: `lib:protocols:spec:models` (see `run-tests.sh`).
 
-**Why one MC module per scenario:** TLA+'s `INSTANCE` substitution cannot
-replace a state-dependent operator with an outer definition that closes
-over primed variables. Routing therefore lives in a stateless module
-(`protocols/*`) and is **extended** by `PromiseResolution`, which selects
-between them via the `RoutingPolicy` constant.
+**Routing:** Stateless helpers live under `protocols/`; `PromiseResolution`
+dispatches by `RoutingPolicy` (no `INSTANCE` substitution of stateful
+operators).
 
-**Scenarios:** Topology (`objHost`, `promResolver`) and resolver choices are
-picked existentially in `Init`; TLC enumerates them in one run. Only sizes
-(`NumMessages`, finite `Peers` / `Objects` / `Promises`) are fixed in the MC
-module. `SYMMETRY` is omitted because `objHost` / `promResolver` maps are
-not symmetric under arbitrary peer permutations.
+**Scenarios:** `host` is chosen existentially in `Init`; TLC enumerates
+topologies. Only `Peers`, `ChainLength`, `NumMessages`, and policy are fixed
+in each MC. `SYMMETRY` is omitted because `host` is not symmetric under
+arbitrary peer permutations.
 
 ## How to run
 
-You need `tla2tools.jar` (TLC 2.x). One way to get it:
+Install `tla2tools.jar` (TLC 2.x), e.g.:
 
 ```bash
 mkdir -p ~/tla
@@ -95,107 +91,81 @@ curl -sSL -o ~/tla/tla2tools.jar \
   https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 ```
 
-Then, from the repo root:
+From the repo root:
 
 ```bash
 ./scripts/run-tests.sh
 ```
 
-The script runs every model in `models/`, captures TLC's exit code per MC,
-and prints a table:
+This runs every model in the `TESTS` matrix, records TLC logs under
+`.tlc-logs/`, and exits non-zero if an outcome disagrees with the expected
+one (`pass` vs `violation`).
 
+### Debug trace + mermaid diagram
+
+Re-run the naive counterexample with **`DebugTrace`** and emit a mermaid
+`sequenceDiagram`: **arrows** from `channels` diffs, **notes** from `lastAction`.
+
+```bash
+./scripts/run-tests.sh --debug MC_NaivePromiseResolution
 ```
-MODEL                             EXPECTED    ACTUAL      DETAIL
---------------------------------  ----------  ----------  -------
-MC_NaivePromiseResolution         violation   violation   Invariant EndToEndRefFIFO_MC is violated
-MC_NoPromiseResolution            pass        pass        45132720 distinct / 122400388 generated
+
+Outputs:
+
+- `.tlc-logs/MC_NaivePromiseResolution.debug.log` — full TLC output  
+- `.tlc-logs/MC_NaivePromiseResolution.trace.md` — mermaid `sequenceDiagram`
+
+Participants are the MC’s `Peers` values (`vatA`, `vatB` in the stock MCs).
+**Arrows** come from diffing `channels` between successive TLC states (new
+tail on `channels[from][to]`). **Notes** come from `lastAction` for steps
+that do not show as channel writes (local queues, self pending, etc.).
+
+You can also pipe any TLC log manually:
+
+```bash
+python3 scripts/trace_to_mermaid.py < .tlc-logs/MC_NaivePromiseResolution.debug.log
 ```
 
-It exits non-zero only when an MC's actual outcome disagrees with the
-expected one declared in the script's `TESTS` matrix. Full TLC output for
-each MC is left in `.tlc-logs/<module>.log`. Override TLA jar location with
-`TLA_JAR=/path/to/tla2tools.jar` and worker count with `WORKERS=N`.
-
-To run a single MC directly:
+### Single model (TLC CLI)
 
 ```bash
 java -cp ~/tla/tla2tools.jar:lib:protocols:spec:models tlc2.TLC \
      -workers auto \
-     -config models/MC_NoPromiseResolution.cfg \
-     models/MC_NoPromiseResolution.tla
+     -config models/MC_NoPromiseResolution_3Chain.cfg \
+     models/MC_NoPromiseResolution_3Chain.tla
 ```
 
-### Run-time expectations (`NumMessages = 3`, two peers, one promise, one object)
+## What this shows
 
-| Model                          | Outcome   | States                              | Time (M2-class) |
-|--------------------------------|-----------|-------------------------------------|------------------|
-| `MC_NaivePromiseResolution`    | violation | ~4k explored before halt            | ~1 s             |
-| `MC_NoPromiseResolution`       | pass      | ~45M distinct (~122M generated)     | ~3–12 min        |
-
-`MC_NaivePromiseResolution` halts at the first invariant violation, so the
-state count is "states until first counterexample," not the full reachable
-set. Don't read it as "the naive variant has a smaller state space than the
-no-promise variant" — to compare fairly, drop `INVARIANT
-EndToEndRefFIFO_MC` from the Naive `.cfg` and re-run.
-
-### Fingerprint-collision estimates
-
-TLC dedupes states by 64-bit hash ("fingerprint"). Two distinct states can
-share a hash, and TLC will silently skip the later one. The two
-probabilities printed at the end of a successful run are upper bounds on
-the chance this happened: a calculated estimate, and one based on actual
-fingerprint distribution. Values around `1e-4` mean roughly 1 in 10,000
-odds the run missed a state. To increase confidence, re-run with `-fp K`
-for a different seed (`0 ≤ K ≤ 63`) and confirm the same result.
-
-## What this does / doesn't prove
-
-**Shows (naive):** `EndToEndRefFIFO` can fail when a sender learns a
+**Naive:** `EndToEndRefFIFO` can fail when the head learns full-chain
 resolution and may deliver locally while earlier `op:deliver-only` messages
-on the **same** promise reference are still in flight on the resolver path.
+on ref `1` are still queued or in flight toward the terminal.
 
-**Shows (no-promise):** Under the same FIFO and topology model, with **no**
-post-resolution shortcut on promises, **`EndToEndRefFIFO`** holds for the
-checked configuration (`NumMessages = 3`, two peers, one promise, one
-object — the smallest setting that admits the naive failure trace).
+**No-promise:** With no post-resolution shortcut on ref `1`, the invariant
+holds for the checked MCs (two-peer `ChainLength = 2`, `NumMessages = 3`, and
+`ChainLength = 3`, `NumMessages = 2`).
 
-**Does not show:** Cross-sender scenarios, chain shortening to another
-promise, partition, or any particular fix — only the hazard surface for the
-stated invariant.
+**Not shown:** Multiple deliver-only originators, `op:listen`-based
+propagation, Disembargo / `op:flush`, promise-to-promise shortening beyond
+the implicit chain — only the hazard surface for the stated invariant.
 
 ## Variant ideas (not yet implemented)
 
-These are intended as additional `RoutingPolicy` values or as parallel
-hooks; the seam is already in `PromiseResolution.RouteSend` /
-`OnReceiveResolution`.
+- **`op:listen`-based resolution propagation** instead of broadcasting
+  `op:resolve-notify` to every peer.
+- **Disembargo / `op:flush` / DelayedRedirector** — fence the pipeline before
+  path switchover.
+- **Intermediate shortening** (skip intermediate resolver hops) as a
+  separate `RoutingPolicy`.
 
-- **OCapN `op:listen`-based resolution propagation.** Currently the
-  resolver broadcasts `op:resolve-notify` to every other peer at resolution
-  time. In the [CapTP draft][captp], peers explicitly `op:listen` on a
-  promise and the resolver-holder notifies each listener (often via
-  `op:deliver` to the listener's resolver object). Adding this would mean
-  modeling `op:listen` as an action (peer subscribes), tracking
-  subscriptions per `(promise, listener)`, and replacing the broadcast in
-  `ResolverResolve` with per-listener notification.
+See [CapTP draft](https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md#promise-and-resolver-objects).
 
-  Note that `op:deliver` (the request/response variant of `op:deliver-only`)
-  carries an **implicit `op:listen`** via its optional `resolve-me-desc`
-  field: when present, the resolver-holder MUST notify the named resolver
-  on resolution, with no separate `op:listen` round-trip. So a future
-  listen-based model only needs explicit `op:listen` for the case where a
-  peer that previously sent `op:deliver-only` (or `op:deliver` without
-  `resolve-me-desc`) later decides it wants the resolution.
-- **Disembargo / `op:flush` / DelayedRedirector.** Each would add a
-  protocol module with a non-empty `OnReceiveResolution` (fence message
-  sequence) and corresponding `ProtocolNextExtra` actions to drain the
-  pipeline before the path switchover.
-- **Chain shortening** (promise-resolves-to-promise). Requires extending
-  `resolution[pr]` to allow promise targets and revising `TerminalRef` to
-  follow the chain across peers.
+## Fingerprint collisions
 
-[captp]: https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md#promise-and-resolver-objects
+TLC dedupes by 64-bit fingerprint; distinct states can collide. Re-run with
+`-fp K` (`0 ≤ K ≤ 63`) if you need extra confidence on large models.
 
 ## Pointers
 
-- E-on-Java `DelayedRedirector`, Cap'n Proto `Disembargo`, Waterken flush,
+- E-on-Java `DelayedRedirector`, Cap’n Proto `Disembargo`, Waterken flush,
   Ridley `op:flush` — candidate follow-on protocol modules

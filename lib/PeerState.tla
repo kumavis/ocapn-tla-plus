@@ -1,27 +1,28 @@
 ----------------------------- MODULE PeerState -----------------------------
 (***************************************************************************)
 (* Per-peer local delivery queues, per-promise pending queues at resolvers, *)
-(* send counters, and the observable delivery log.                          *)
+(* a single global send counter (only the chain head emits op:deliver-only), *)
+(* and the observable delivery log.                                         *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, Network
 
 VARIABLES
     localQueues,   \* [Peers -> Seq(Messages)]
-    pending,       \* [Peers -> [Promises -> Seq(Messages)]]
-    sent,          \* [Peers -> [RefSpace -> 0..NumMessages]]
+    pending,       \* [Peers -> [PromiseRefs -> Seq(Messages)]]
+    sent,          \* 0..NumMessages (head peer only; see PromiseResolution)
     delivered      \* Seq of delivery records (see PromiseResolution)
 
 PeerStateInit ==
     /\ localQueues = [p \in Peers |-> << >>]
-    /\ pending = [p \in Peers |-> [pr \in Promises |-> << >>]]
-    /\ sent = [p \in Peers |-> [r \in RefSpace |-> 0]]
+    /\ pending = [p \in Peers |-> [pr \in PromiseRefs |-> << >>]]
+    /\ sent = 0
     /\ delivered = << >>
 
 PeerStateTypeOK(Messages, DeliveredEntry, NumMessagesArg) ==
     /\ localQueues \in [Peers -> Seq(Messages)]
-    /\ pending \in [Peers -> [Promises -> Seq(Messages)]]
-    /\ sent \in [Peers -> [RefSpace -> 0..NumMessagesArg]]
+    /\ pending \in [Peers -> [PromiseRefs -> Seq(Messages)]]
+    /\ sent \in 0..NumMessagesArg
     /\ delivered \in Seq(DeliveredEntry)
 
 ============================================================================

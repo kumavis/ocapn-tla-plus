@@ -1,10 +1,7 @@
---------------------- MODULE MC_NaivePromiseResolution ---------------------
+----------------- MODULE MC_NaivePromiseResolution_Debug -----------------
 (***************************************************************************)
-(* Model-check PromiseResolution under NaivePromiseResolution routing.     *)
-(* ChainLength = 2; HeadPeer=vatA sends on p1; host[1]=vatB holds resolver; *)
-(* host[2]=vatA holds terminal (classic naive race vs cross-vat notify).   *)
-(* Expected: EndToEndRefFIFO_MC violated (head learns resolution, local    *)
-(* shortcut races pipelined op:deliver-only on ref 1).                     *)
+(* Same as MC_NaivePromiseResolution with DebugTrace TRUE for TLC traces   *)
+(* and scripts/trace-to-mermaid.sh.                                        *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -15,7 +12,7 @@ ChainLength == 2
 NumMessages == 3
 ExtraOps == {}
 RoutingPolicy == "NaivePromiseResolution"
-DebugTrace == FALSE
+DebugTrace == TRUE
 
 VARIABLES
     channels,

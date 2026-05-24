@@ -1,47 +1,32 @@
 ------------------------ MODULE NaivePromiseResolution ------------------------
 (***************************************************************************)
 (* Naive routing after promise *resolution* (not full shortening): once a   *)
-(* peer learns a promise's resolution, op:deliver-only on that promise may  *)
-(* go locally if the terminal object is on that peer; otherwise traffic     *)
-(* still goes via the resolver.                                             *)
-(*                                                                         *)
-(* Broader "shortening" (e.g. promise-resolves-to-promise / chain shorten)  *)
-(* is out of scope here and can be a separate protocol module later.       *)
+(* peer learns resolutions along the chain from some promise r onward,     *)
+(* op:deliver-only on r may go locally if the terminal object is on that     *)
+(* peer.  Used here with r = 1 and p = host[1] (sole op:deliver-only sender).*)
 (*                                                                         *)
 (* Operators are stateless; PromiseResolution closes over variables.        *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences
 
-IsObj(r, Objects) == r \in Objects
-IsPr(r, Promises) == r \in Promises
-
-RECURSIVE Tr(_, _, _, _, _)
-Tr(resMap, r, Objects, Promises, UNRESOLVED) ==
-    IF IsObj(r, Objects) THEN r
-    ELSE
-        IF resMap[r] = UNRESOLVED THEN r
-        ELSE Tr(resMap, resMap[r], Objects, Promises, UNRESOLVED)
-
-HostTerm(resMap, objH, promR, r, Objects, Promises, UNRESOLVED) ==
-    LET t == Tr(resMap, r, Objects, Promises, UNRESOLVED) IN
-        IF IsObj(t, Objects) THEN objH[t] ELSE promR[t]
+RECURSIVE DeepestKnownRec(_, _, _, _)
+DeepestKnownRec(p, r, kbp, terminalPos) ==
+    IF r = terminalPos
+    THEN terminalPos
+    ELSE IF ~kbp[p][r]
+    THEN r
+    ELSE DeepestKnownRec(p, r + 1, kbp, terminalPos)
 
 (* Routing tag consumed by PromiseResolution.PeerSend.                     *)
-NaivePromiseResolutionRouteSend(p, r, n, knownByPeer, resMap, objH, promR,
-                                Objects, Promises, UNRESOLVED) ==
-    IF IsPr(r, Promises)
-    THEN
-        IF /\ knownByPeer[p][r]
-           /\ HostTerm(resMap, objH, promR, r, Objects, Promises, UNRESOLVED) = p
-        THEN "local"
-        ELSE "viaResolver"
-    ELSE
-        IF /\ IsObj(r, Objects) /\ objH[r] = p
-        THEN "local"
-        ELSE "viaTerminal"
+NaivePromiseResolutionRouteSend(p, r, knownByPeer, host, terminalPos) ==
+    LET deepest == DeepestKnownRec(p, r, knownByPeer, terminalPos)
+    IN IF /\ deepest = terminalPos
+          /\ host[terminalPos] = p
+       THEN "local"
+       ELSE "viaResolver"
 
 (* Sequence of extra channel sends [from |-> .., to |-> .., msg |-> ..].   *)
-NaivePromiseResolutionOnReceiveSeq(p, pr, tgt) == <<>>
+NaivePromiseResolutionOnReceiveSeq(p, pr) == <<>>
 
 ============================================================================

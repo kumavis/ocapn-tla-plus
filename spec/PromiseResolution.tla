@@ -1,15 +1,12 @@
 ------------------------- MODULE PromiseResolution -------------------------
 (***************************************************************************)
-(* OCapN-flavored model of pipelined op:deliver-only on a promise,         *)
-(* promise *resolution* to a remotable object, and per-pair FIFO transport. *)
+(* OCapN-flavored model: linear ref-chain (1..ChainLength), per-pair FIFO   *)
+(* transport, pipelined op:deliver-only originated only at CONSTANT HeadPeer *)
+(* on ref 1.  Promise i resolves implicitly to i+1; host[i] holds the      *)
+(* resolver for promise i (HeadPeer may differ from host[1]).              *)
 (*                                                                         *)
-(* Routing policy is selected by CONSTANT RoutingPolicy (see MC modules):  *)
-(*   "NaivePromiseResolution" - NaivePromiseResolution.tla                  *)
-(*   "NoPromiseResolution"    - NoPromiseResolution.tla                     *)
-(*                                                                         *)
-(* op:resolve-notify is modeled as a wire message that the resolver        *)
-(* enqueues to every other peer at the moment of resolution (broadcast).   *)
-(* See README "Variant ideas" for a planned op:listen-based variant.       *)
+(* RoutingPolicy CONSTANT: "NaivePromiseResolution" | "NoPromiseResolution" *)
+(* DebugTrace CONSTANT: when TRUE, lastAction records the last fired step. *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, TLC,
@@ -17,27 +14,32 @@ EXTENDS Naturals, Sequences, TLC,
         NoPromiseResolution,
         PeerState
 
+VARIABLE lastAction
+
 CONSTANT
     NumMessages,
     ExtraOps,
-    RoutingPolicy
+    RoutingPolicy,
+    DebugTrace
 
 ASSUME NumMessages \in Nat \ {0}
 ASSUME RoutingPolicy \in {"NaivePromiseResolution", "NoPromiseResolution"}
+ASSUME DebugTrace \in BOOLEAN
 
 ----------------------------------------------------------------------------
-(* OCapN-shaped wire messages.                                              *)
+(* OCapN-shaped wire messages.  pos = chain position this hop is delivered   *)
+(* to (resolver of promise pos, or terminal when pos = ChainLength).         *)
 
-OpDeliverOnly(sender, sentOnRef, seq) ==
+OpDeliverOnly(sender, sentOnRef, seq, pos) ==
     [op |-> "op:deliver-only",
      sender |-> sender,
      sentOnRef |-> sentOnRef,
-     seq |-> seq]
+     seq |-> seq,
+     pos |-> pos]
 
-OpResolveNotify(promise, resolvedTo) ==
+OpResolveNotify(promise) ==
     [op |-> "op:resolve-notify",
-     promise |-> promise,
-     resolvedTo |-> resolvedTo]
+     promise |-> promise]
 
 OpListen(subscriber, promise) ==
     [op |-> "op:listen",
@@ -45,39 +47,41 @@ OpListen(subscriber, promise) ==
      promise |-> promise]
 
 BaseMessages ==
-    { OpDeliverOnly(p, r, n) :
-        p \in Peers, r \in RefSpace, n \in 1..NumMessages }
-    \cup { OpResolveNotify(pr, tgt) :
-        pr \in Promises, tgt \in Objects }
-    \cup { OpListen(sub, pr) :
-        sub \in Peers, pr \in Promises }
+    { OpDeliverOnly(HeadPeer, r, n, pos) :
+        r \in {1}, n \in 1..NumMessages, pos \in Refs }
+    \cup { OpResolveNotify(i) : i \in PromiseRefs }
+    \cup { OpListen(sub, pr) : sub \in Peers, pr \in PromiseRefs }
 
 Messages == BaseMessages \cup ExtraOps
 
 DeliveredEntry ==
-    [sender : Peers, ref : RefSpace, seq : 1..NumMessages]
+    [sender : Peers, ref : {1}, seq : 1..NumMessages]
 
 ----------------------------------------------------------------------------
 (* Protocol hooks: dispatch by RoutingPolicy.                               *)
 
-RouteSend(p, r, n) ==
+RouteSend(p, r) ==
     IF RoutingPolicy = "NaivePromiseResolution"
-    THEN NaivePromiseResolutionRouteSend(p, r, n, knownByPeer, resolution,
-            objHost, promResolver, Objects, Promises, UNRESOLVED)
-    ELSE NoPromiseResolutionRouteSend(p, r, n, knownByPeer, resolution,
-            objHost, promResolver, Objects, Promises, UNRESOLVED)
+    THEN NaivePromiseResolutionRouteSend(p, r, knownByPeer, host, TerminalPos)
+    ELSE NoPromiseResolutionRouteSend(p, r, knownByPeer, host, TerminalPos)
 
-OnReceiveResolution(p, pr, tgt) ==
+OnReceiveResolution(p, pr) ==
     IF RoutingPolicy = "NaivePromiseResolution"
-    THEN NaivePromiseResolutionOnReceiveSeq(p, pr, tgt)
-    ELSE NoPromiseResolutionOnReceiveSeq(p, pr, tgt)
+    THEN NaivePromiseResolutionOnReceiveSeq(p, pr)
+    ELSE NoPromiseResolutionOnReceiveSeq(p, pr)
 
 ProtocolNextExtra ==
     FALSE
 
 vars ==
-    << channels, objHost, promResolver, resolution, knownByPeer,
-       localQueues, pending, sent, delivered >>
+    << channels, host, resolved, knownByPeer,
+       localQueues, pending, sent, delivered, lastAction >>
+
+----------------------------------------------------------------------------
+(* Debug: structured last step (only lastAction' varies when DebugTrace).  *)
+
+Mark(rec) ==
+    IF DebugTrace THEN lastAction' = rec ELSE UNCHANGED lastAction
 
 ----------------------------------------------------------------------------
 (* Applying a finite sequence of extra sends returned by a protocol hook.   *)
@@ -95,56 +99,63 @@ Init ==
     /\ ReferencesInit
     /\ NetworkInit
     /\ PeerStateInit
+    /\ lastAction = [name |-> "init"]
 
 ----------------------------------------------------------------------------
-(* Peer emits the next op:deliver-only on some reference, tagged with the   *)
-(* monotonic per-(peer, ref) sequence number used to check ordering.        *)
-(* PeerSend does not gate on knownByPeer — promise sends may be pipelined   *)
-(* before resolution.                                                       *)
+(* Head peer emits op:deliver-only on ref 1 with monotonic seq.             *)
 
 PeerSend ==
-    \E p \in Peers, r \in RefSpace :
-        /\ sent[p][r] < NumMessages
-        /\ LET n == sent[p][r] + 1
-               m == OpDeliverOnly(p, r, n)
-               tag == RouteSend(p, r, n)
+    LET sender == HeadPeer
+        res1 == host[1]
+        r == 1
+    IN
+        /\ sent < NumMessages
+        /\ LET n == sent + 1
+               m == OpDeliverOnly(sender, r, n, 1)
+               tag == RouteSend(sender, r)
            IN
-           /\ sent' = [sent EXCEPT ![p][r] = n]
+           /\ sent' = n
            /\ (CASE
                      tag = "local"
                        -> /\ localQueues' =
-                               [localQueues EXCEPT ![p] = Append(@, m)]
+                               [localQueues EXCEPT ![sender] = Append(@,
+                                   OpDeliverOnly(sender, r, n, TerminalPos))]
                           /\ UNCHANGED << channels, pending >>
-                     [] (tag = "viaResolver") /\ IsPromise(r)
-                       -> LET prx == r
-                              rp == promResolver[prx] IN
-                              /\ IF rp = p
-                                 THEN /\ pending' =
-                                             [pending EXCEPT
-                                                 ![p] =
-                                                     [pending[p] EXCEPT
-                                                         ![prx] =
-                                                             Append(pending[p][prx],
-                                                                    m)]]
-                                      /\ UNCHANGED channels
-                                 ELSE /\ channels' =
-                                             NetworkAppend(channels, p, rp, m)
-                                      /\ UNCHANGED pending
-                              /\ UNCHANGED localQueues
-                     [] (tag = "viaTerminal") /\ IsObject(r)
-                       -> LET h == objHost[r] IN
-                              /\ IF h = p
-                                 THEN /\ localQueues' =
-                                             [localQueues EXCEPT ![p] = Append(@, m)]
-                                      /\ UNCHANGED channels
-                                 ELSE /\ channels' =
-                                             NetworkAppend(channels, p, h, m)
-                                      /\ UNCHANGED localQueues
-                              /\ UNCHANGED pending
+                     [] tag = "viaResolver"
+                       -> IF \/ ~resolved[1]
+                             \/ Len(pending[res1][1]) > 0
+                          THEN /\ pending' =
+                                   [pending EXCEPT
+                                       ![res1] =
+                                           [pending[res1] EXCEPT
+                                               ![1] =
+                                                   Append(pending[res1][1],
+                                                          m)]]
+                               /\ UNCHANGED channels
+                               /\ UNCHANGED localQueues
+                          ELSE LET nextPos == 2
+                                   m2 ==
+                                       OpDeliverOnly(sender, r, n, nextPos)
+                                   nxtHost == host[nextPos]
+                                   (* If the next hop is the same vat as the sender, do not open a
+                                      second FIFO (channels[sender][sender]) alongside e.g.
+                                      channels[resolver][sender]; TLC could ReceiveNetwork them
+                                      out of order.  Route the forward via the resolver link instead. *)
+                                   hopFrom ==
+                                       IF nxtHost = sender THEN res1 ELSE sender
+                               IN /\ channels' =
+                                       NetworkAppend(channels, hopFrom,
+                                           nxtHost, m2)
+                                  /\ UNCHANGED pending
+                                  /\ UNCHANGED localQueues
                      [] OTHER -> FALSE)
-           /\ UNCHANGED
-                  << objHost, promResolver, resolution, knownByPeer,
-                     delivered >>
+           /\ UNCHANGED << host, resolved, knownByPeer, delivered >>
+           /\ Mark([name |-> "PeerSend",
+                    actor |-> sender,
+                    resolver |-> res1,
+                    ref |-> r,
+                    seq |-> n,
+                    tag |-> tag])
 
 ----------------------------------------------------------------------------
 LocalDeliver ==
@@ -153,42 +164,44 @@ LocalDeliver ==
         /\ LET m == Head(localQueues[p])
            IN
            /\ m.op = "op:deliver-only"
+           /\ m.pos = TerminalPos
            /\ localQueues' = [localQueues EXCEPT ![p] = Tail(@)]
            /\ delivered' =
                 Append(delivered,
                        [sender |-> m.sender,
-                        ref    |-> m.sentOnRef,
-                        seq    |-> m.seq])
+                        ref |-> m.sentOnRef,
+                        seq |-> m.seq])
            /\ UNCHANGED
-                  << channels, objHost, promResolver, resolution,
-                     knownByPeer, pending, sent >>
+                  << channels, host, resolved, knownByPeer,
+                     pending, sent >>
+           /\ Mark([name |-> "LocalDeliver",
+                    actor |-> p,
+                    seq |-> m.seq,
+                    ref |-> m.sentOnRef])
 
 ----------------------------------------------------------------------------
 ResolverResolve ==
-    \E res \in Peers, pr \in Promises :
-        /\ promResolver[pr] = res
-        /\ resolution[pr] = UNRESOLVED
-        /\ \E tgt \in Objects :
-            LET notifyMsg == OpResolveNotify(pr, tgt)
-                chB ==
-                    [channels EXCEPT ![res] =
-                        [q \in Peers |->
-                            IF q = res
-                            THEN channels[res][q]
-                            ELSE Append(channels[res][q], notifyMsg)]]
-            IN
-            /\ resolution' = [resolution EXCEPT ![pr] = tgt]
-            /\ knownByPeer' = [knownByPeer EXCEPT ![res][pr] = TRUE]
-            /\ channels' = ChannelsAfterSends(chB, OnReceiveResolution(res, pr, tgt))
-            /\ UNCHANGED
-                   << objHost, promResolver, localQueues, pending, sent,
-                      delivered >>
+    \E i \in PromiseRefs :
+        /\ ~resolved[i]
+        /\ LET res == host[i]
+               notifyMsg == OpResolveNotify(i)
+               chB ==
+                   [channels EXCEPT ![res] =
+                       [q \in Peers |->
+                           IF q = res
+                           THEN channels[res][q]
+                           ELSE Append(channels[res][q], notifyMsg)]]
+           IN
+           /\ resolved' = [resolved EXCEPT ![i] = TRUE]
+           /\ knownByPeer' = [knownByPeer EXCEPT ![res][i] = TRUE]
+           /\ channels' = ChannelsAfterSends(chB, OnReceiveResolution(res, i))
+           /\ UNCHANGED
+                  << host, localQueues, pending, sent, delivered >>
+           /\ Mark([name |-> "ResolverResolve",
+                    actor |-> res,
+                    promise |-> i])
 
 ----------------------------------------------------------------------------
-(* Network receive: promise delivers at the resolver are queued whenever     *)
-(* the promise is still unresolved OR there is already backlog in pending,  *)
-(* so a resolved promise cannot "jump" ahead of an older op still in        *)
-(* pending.                                                                 *)
 ReceiveNetwork ==
     \E from, to \in Peers :
         /\ NetworkNonEmpty(channels, from, to)
@@ -197,125 +210,153 @@ ReceiveNetwork ==
            IN
            \/ /\ msg.op = "op:resolve-notify"
               /\ LET pr == msg.promise
-                     tgt == msg.resolvedTo
                  IN
                  /\ knownByPeer' = [knownByPeer EXCEPT ![to][pr] = TRUE]
                  /\ channels' =
-                        ChannelsAfterSends(ch0,
-                            OnReceiveResolution(to, pr, tgt))
+                        ChannelsAfterSends(ch0, OnReceiveResolution(to, pr))
                  /\ UNCHANGED
-                        << objHost, promResolver, resolution, localQueues,
+                        << host, resolved, localQueues,
                            pending, sent, delivered >>
+                 /\ Mark([name |-> "ReceiveNetwork",
+                          kind |-> "resolve-notify",
+                          from |-> from,
+                          to |-> to,
+                          promise |-> pr])
            \/ /\ msg.op = "op:deliver-only"
+              /\ to = host[msg.pos]
               /\ LET s == msg.sender
-                     r == msg.sentOnRef
                      seq == msg.seq
+                     ref == msg.sentOnRef
+                     pos == msg.pos
                  IN
-                 \/ /\ IsObject(r)
-                    /\ objHost[r] = to
+                 \/ /\ pos = TerminalPos
                     /\ delivered' =
                             Append(delivered,
-                                   [sender |-> s, ref |-> r, seq |-> seq])
+                                   [sender |-> s, ref |-> ref, seq |-> seq])
                     /\ channels' = ch0
                     /\ UNCHANGED
-                           << objHost, promResolver, resolution, knownByPeer,
+                           << host, resolved, knownByPeer,
                               localQueues, pending, sent >>
-                 \/ /\ IsPromise(r)
-                    /\ LET pr == r IN
-                       IF to = promResolver[pr]
-                       THEN
-                           IF \/ resolution[pr] = UNRESOLVED
-                              \/ Len(pending[to][pr]) > 0
-                           THEN
-                               /\ pending' =
-                                    [pending EXCEPT
-                                        ![to] =
-                                            [pending[to] EXCEPT
-                                                ![pr] =
-                                                    Append(pending[to][pr],
-                                                           msg)]]
-                               /\ channels' = ch0
-                               /\ UNCHANGED
-                                      << objHost, promResolver, resolution,
-                                         knownByPeer, localQueues, sent,
-                                         delivered >>
-                           ELSE
-                               LET term == TerminalRef(pr) IN
-                                   /\ resolution[pr] # UNRESOLVED
-                                   /\ IsObject(term)
-                                   /\ IF objHost[term] = to
-                                      THEN /\ delivered' =
-                                               Append(delivered,
-                                                      [sender |-> s,
-                                                       ref    |-> pr,
-                                                       seq    |-> seq])
-                                           /\ channels' = ch0
-                                           /\ UNCHANGED
-                                                  << objHost, promResolver,
-                                                     resolution, knownByPeer,
-                                                     localQueues, pending,
-                                                     sent >>
-                                      ELSE /\ channels' =
-                                               NetworkAppend(ch0, to,
-                                                   objHost[term], msg)
-                                           /\ UNCHANGED
-                                                  << objHost, promResolver,
-                                                     resolution, knownByPeer,
-                                                     localQueues, pending,
-                                                     sent, delivered >>
-                       ELSE IF resolution[pr] # UNRESOLVED
-                            THEN
-                                LET term == TerminalRef(pr) IN
-                                    /\ IsObject(term)
-                                    /\ IF objHost[term] = to
-                                       THEN /\ delivered' =
-                                                Append(delivered,
-                                                       [sender |-> s,
-                                                        ref    |-> pr,
-                                                        seq    |-> seq])
-                                            /\ channels' = ch0
-                                            /\ UNCHANGED
-                                                   << objHost, promResolver,
-                                                      resolution, knownByPeer,
-                                                      localQueues, pending,
-                                                      sent >>
-                                       ELSE /\ channels' =
-                                                NetworkAppend(ch0, to,
-                                                    objHost[term], msg)
-                                            /\ UNCHANGED
-                                                   << objHost, promResolver,
-                                                      resolution, knownByPeer,
-                                                      localQueues, pending,
-                                                      sent, delivered >>
-                            ELSE FALSE
+                    /\ Mark([name |-> "ReceiveNetwork",
+                             kind |-> "deliver-terminal",
+                             from |-> from,
+                             to |-> to,
+                             seq |-> seq,
+                             ref |-> ref])
+                 \/ /\ pos \in PromiseRefs
+                    /\ IF \/ ~resolved[pos]
+                          \/ Len(pending[to][pos]) > 0
+                       THEN /\ pending' =
+                                [pending EXCEPT
+                                    ![to] =
+                                        [pending[to] EXCEPT
+                                            ![pos] =
+                                                Append(pending[to][pos],
+                                                       msg)]]
+                            /\ channels' = ch0
+                            /\ UNCHANGED
+                                   << host, resolved, knownByPeer,
+                                      localQueues, sent, delivered >>
+                            /\ Mark([name |-> "ReceiveNetwork",
+                                     kind |-> "enqueue-pending",
+                                     from |-> from,
+                                     to |-> to,
+                                     seq |-> seq,
+                                     pos |-> pos])
+                       ELSE LET nextPos == pos + 1
+                                m2 == [msg EXCEPT !.pos = nextPos]
+                            IN
+                               IF nextPos = TerminalPos
+                               THEN IF host[TerminalPos] = to
+                                    THEN /\ delivered' =
+                                             Append(delivered,
+                                                    [sender |-> s,
+                                                     ref |-> ref,
+                                                     seq |-> seq])
+                                         /\ channels' = ch0
+                                         /\ UNCHANGED
+                                                << host, resolved,
+                                                   knownByPeer,
+                                                   localQueues,
+                                                   pending, sent >>
+                                         /\ Mark([name |-> "ReceiveNetwork",
+                                                  kind |-> "forward-deliver",
+                                                  from |-> from,
+                                                  to |-> to,
+                                                  seq |-> seq,
+                                                  pos |-> pos])
+                                    ELSE /\ channels' =
+                                             NetworkAppend(ch0, to,
+                                                 host[TerminalPos], m2)
+                                         /\ UNCHANGED
+                                                << host, resolved,
+                                                   knownByPeer,
+                                                   localQueues,
+                                                   pending, sent,
+                                                   delivered >>
+                                         /\ Mark([name |-> "ReceiveNetwork",
+                                                  kind |-> "forward-wire",
+                                                  from |-> from,
+                                                  to |-> to,
+                                                  seq |-> seq,
+                                                  pos |-> pos,
+                                                  nextPos |-> nextPos])
+                               ELSE LET hopR ==
+                                            IF host[nextPos] = to
+                                            THEN HeadPeer
+                                            ELSE to
+                                    IN /\ channels' =
+                                           NetworkAppend(ch0, hopR,
+                                               host[nextPos], m2)
+                                    /\ UNCHANGED
+                                           << host, resolved, knownByPeer,
+                                              localQueues, pending, sent,
+                                              delivered >>
+                                    /\ Mark([name |-> "ReceiveNetwork",
+                                             kind |-> "forward-wire",
+                                             from |-> from,
+                                             to |-> to,
+                                             seq |-> seq,
+                                             pos |-> pos,
+                                             nextPos |-> nextPos])
 
 ----------------------------------------------------------------------------
 ProcessPending ==
-    \E q \in Peers, pr \in Promises :
+    \E q \in Peers, pr \in PromiseRefs :
         /\ Len(pending[q][pr]) > 0
-        /\ resolution[pr] # UNRESOLVED
+        /\ resolved[pr]
         /\ LET m == Head(pending[q][pr])
-               term == TerminalRef(pr)
+               nextPos == pr + 1
+               m2 == [m EXCEPT !.pos = nextPos]
            IN
            /\ m.op = "op:deliver-only"
            /\ pending' =
                 [pending EXCEPT
                     ![q] =
                         [pending[q] EXCEPT ![pr] = Tail(pending[q][pr])]]
-           /\ IsObject(term)
-           /\ IF objHost[term] = q
-              THEN /\ delivered' =
-                        Append(delivered,
-                               [sender |-> m.sender,
-                                ref    |-> m.sentOnRef,
-                                seq    |-> m.seq])
-                   /\ UNCHANGED channels
-              ELSE /\ channels' =
-                        NetworkAppend(channels, q, objHost[term], m)
+           /\ IF nextPos = TerminalPos
+              THEN IF host[TerminalPos] = q
+                   THEN /\ delivered' =
+                             Append(delivered,
+                                    [sender |-> m.sender,
+                                     ref |-> m.sentOnRef,
+                                     seq |-> m.seq])
+                        /\ UNCHANGED channels
+                   ELSE /\ channels' =
+                             NetworkAppend(channels, q,
+                                 host[TerminalPos], m2)
+                        /\ UNCHANGED delivered
+              ELSE LET hopQ ==
+                           IF host[nextPos] = q THEN HeadPeer ELSE q
+                   IN /\ channels' =
+                           NetworkAppend(channels, hopQ, host[nextPos], m2)
                    /\ UNCHANGED delivered
-           /\ UNCHANGED
-                  << objHost, promResolver, resolution, knownByPeer,
-                     localQueues, sent >>
+           /\ UNCHANGED << host, resolved, knownByPeer, localQueues, sent >>
+           /\ Mark([name |-> "ProcessPending",
+                    actor |-> q,
+                    promise |-> pr,
+                    seq |-> m.seq,
+                    nextPos |-> pr + 1])
 
 ----------------------------------------------------------------------------
 BasicNext ==
@@ -342,11 +383,10 @@ TypeOK ==
 
 ----------------------------------------------------------------------------
 (* Per-(sender peer, reference): op:deliver-only deliveries appear in       *)
-(* strictly increasing send order for that same reference.  No claim        *)
-(* across different senders or different references.                        *)
+(* strictly increasing send order for that same reference.                    *)
 
 EndToEndRefFIFO ==
-    \A sender \in Peers, ref \in RefSpace :
+    \A sender \in Peers, ref \in {1} :
         LET seqs ==
             SelectSeq(delivered,
                 LAMBDA d : d.sender = sender /\ d.ref = ref)

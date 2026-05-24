@@ -1,62 +1,62 @@
 ---------------------- MODULE MC_NoPromiseResolution ----------------------
 (***************************************************************************)
-(* Model-check PromiseResolution under NoPromiseResolution routing: every   *)
-(* op:deliver-only on a promise always goes via the resolver (no local      *)
-(* shortcut after learning resolution).                                     *)
-(*                                                                         *)
-(* Sized to match the two-party failure-case witness for                    *)
-(* MC_NaivePromiseResolution (NumMessages = 3).  Expected: TypeOK_MC and    *)
-(* EndToEndRefFIFO_MC both hold; full state-space exploration runs to       *)
-(* completion (large; takes minutes).                                       *)
+(* Model-check PromiseResolution under NoPromiseResolution routing.         *)
+(* Same sizes as MC_NaivePromiseResolution (NumMessages = 3).              *)
+(* Expected: both invariants hold; full state space is large.              *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
-Peers == {"p1", "p2"}
-Objects == {"o1"}
-Promises == {"pr1"}
+Peers == {"vatA", "vatB"}
+HeadPeer == "vatA"
+ChainLength == 2
 NumMessages == 3
 ExtraOps == {}
-UNRESOLVED == "UNR"
 RoutingPolicy == "NoPromiseResolution"
+DebugTrace == FALSE
 
 VARIABLES
     channels,
-    objHost,
-    promResolver,
-    resolution,
+    host,
+    resolved,
     knownByPeer,
     localQueues,
     pending,
     sent,
-    delivered
+    delivered,
+    lastAction
 
 vars ==
-    << channels, objHost, promResolver, resolution, knownByPeer,
-       localQueues, pending, sent, delivered >>
+    << channels, host, resolved, knownByPeer,
+       localQueues, pending, sent, delivered, lastAction >>
 
 PS ==
     INSTANCE PromiseResolution WITH
         Peers <- Peers,
-        Objects <- Objects,
-        Promises <- Promises,
-        UNRESOLVED <- UNRESOLVED,
+        HeadPeer <- HeadPeer,
+        ChainLength <- ChainLength,
         NumMessages <- NumMessages,
         ExtraOps <- ExtraOps,
         RoutingPolicy <- RoutingPolicy,
+        DebugTrace <- DebugTrace,
         channels <- channels,
-        objHost <- objHost,
-        promResolver <- promResolver,
-        resolution <- resolution,
+        host <- host,
+        resolved <- resolved,
         knownByPeer <- knownByPeer,
         localQueues <- localQueues,
         pending <- pending,
         sent <- sent,
-        delivered <- delivered
+        delivered <- delivered,
+        lastAction <- lastAction
 
 Init == PS!Init
 
-Next == PS!Next
+Next ==
+    \/ PS!PeerSend
+    \/ PS!LocalDeliver
+    \/ PS!ResolverResolve
+    \/ PS!ReceiveNetwork
+    \/ PS!ProcessPending
 
 Spec == Init /\ [][Next]_vars
 

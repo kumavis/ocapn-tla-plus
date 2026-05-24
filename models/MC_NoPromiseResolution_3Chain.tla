@@ -1,20 +1,18 @@
---------------------- MODULE MC_NaivePromiseResolution ---------------------
+------------------ MODULE MC_NoPromiseResolution_3Chain ------------------
 (***************************************************************************)
-(* Model-check PromiseResolution under NaivePromiseResolution routing.     *)
-(* ChainLength = 2; HeadPeer=vatA sends on p1; host[1]=vatB holds resolver; *)
-(* host[2]=vatA holds terminal (classic naive race vs cross-vat notify).   *)
-(* Expected: EndToEndRefFIFO_MC violated (head learns resolution, local    *)
-(* shortcut races pipelined op:deliver-only on ref 1).                     *)
+(* Three-position chain (two promises + terminal) on two peers.            *)
+(* NumMessages = 2 to keep exploration tractable.                         *)
+(* Expected: TypeOK_MC and EndToEndRefFIFO_MC hold.                         *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
 Peers == {"vatA", "vatB"}
 HeadPeer == "vatA"
-ChainLength == 2
-NumMessages == 3
+ChainLength == 3
+NumMessages == 2
 ExtraOps == {}
-RoutingPolicy == "NaivePromiseResolution"
+RoutingPolicy == "NoPromiseResolution"
 DebugTrace == FALSE
 
 VARIABLES
@@ -51,10 +49,7 @@ PS ==
         delivered <- delivered,
         lastAction <- lastAction
 
-Init ==
-    /\ PS!Init
-    /\ host[1] = "vatB"
-    /\ host[2] = "vatA"
+Init == PS!Init
 
 Next ==
     \/ PS!PeerSend

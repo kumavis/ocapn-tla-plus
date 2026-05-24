@@ -1,24 +1,39 @@
 Counterexample trace from TLC for MC_NaivePromiseResolution
 (NaivePromiseResolution routing on PromiseResolution).
 
-This is a violating run of EndToEndRefFIFO (per sender peer and reference:
-op:deliver-only sequence numbers must increase).
+This is a violating run of EndToEndRefFIFO: for the head sender on ref 1,
+op:deliver-only sequence numbers must increase in the observable delivery log.
 
-Scenario (one of many TLC finds): promise pr1 is resolved by peer p1 to
-object o1 hosted on p1. A peer sends op:deliver-only on pr1 with seq 1
-along the via-resolver path while pr1 is still unresolved. The resolver
-(p1) emits op:resolve-notify; the sender receives it and learns the
-resolution before seq 1 has been forwarded back. The sender then emits
-seq 2, which naive routing delivers locally to o1. The local delivery
-wins the race against the in-flight seq 1, so the observable log for
-(sender=p1, ref=pr1) becomes <<2, 1>>.
+Chain model (ChainLength = 2): promise at position 1 resolves to terminal at
+position 2. The MC pins a readable witness:
 
-Final state excerpt (invariant violation):
+  HeadPeer = vatA          (only vatA issues PeerSend in this MC)
+  host[1] = vatB           (resolver of p1 lives on vatB)
+  host[2] = vatA           (terminal hop is local to vatA)
 
-  delivered = << [sender |-> "p1", seq |-> 2, ref |-> "pr1"],
-                  [sender |-> "p1", seq |-> 1, ref |-> "pr1"] >>
+Shape of the bug: vatA pipelines op:deliver-only messages on ref 1 toward
+vatB while p1 is unresolved (pending at vatB). vatB resolves p1 and sends
+op:resolve-notify to vatA. After vatA learns the promise is resolved, naive
+routing lets later sends take a shortcut to the terminal (localQueues) while
+an earlier seq is still pending or on the wire, so delivered order for
+(sender=vatA, ref=1) is not strictly increasing.
 
-Broader "shortening" (e.g. promise-resolves-to-promise) is not modeled here;
-this counterexample is about resolution-to-object and the local fast path.
+Exact delivered tail depends on TLC's shortest counterexample; one common
+pattern is <<..., seq=2, ...>>, <<..., seq=1, ...>> or <<..., seq=3, ...>>,
+<<..., seq=1, ...>> — in all cases a higher seq reaches the terminal before a
+lower seq from the same sender on the same ref.
+
+TLC breadth-first order is not wall-clock order: the debug log may schedule
+ResolverResolve before the first PeerSend, or interleave steps differently on
+each run. The mermaid trace (.tlc-logs/MC_NaivePromiseResolution.trace.md)
+puts lastAction notes before channel diffs and labels logical client→resolver
+intent (Note over vatA,vatB) even when the soundness fix routes some forwards
+on the physical edge vatB->>vatA (resolver→client FIFO) instead of vatA->>vatB.
+
+Reproduce a structured trace + mermaid sketch:
+
+  ./scripts/run-tests.sh --debug MC_NaivePromiseResolution
+
+See .tlc-logs/MC_NaivePromiseResolution.trace.md
 
 ============================================================================
