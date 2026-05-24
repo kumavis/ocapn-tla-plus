@@ -161,10 +161,10 @@ def parse_channel_matrix(raw: str) -> dict[str, dict[str, list[str]]]:
 def summarize_msg(msg: str) -> str:
     mo = re.search(r'op\s*\|\->\s*"([^"]*)"', msg)
     op = mo.group(1) if mo else "?"
-    if op == "op:resolve-notify":
+    if op == "op:resolve":
         m2 = re.search(r"promise\s*\|\->\s*(\d+)", msg)
         pr = m2.group(1) if m2 else "?"
-        return f'op:resolve-notify(pr={pr})'
+        return f'op:resolve(pr={pr})'
     if op == "op:deliver-only":
         ms = re.search(r"sender\s*\|\->\s*\"([^\"]*)\"", msg)
         seq = re.search(r"seq\s*\|\->\s*(\d+)", msg)
@@ -183,6 +183,30 @@ def summarize_msg(msg: str) -> str:
         )
     if op == "op:flush-ack":
         return "op:flush-ack"
+    if op == "op:flush":
+        r = re.search(r"refId\s*\|\->\s*(\d+)", msg)
+        return f'op:flush(refId={r.group(1) if r else "?"})'
+    if op == "op:listen":
+        r = re.search(r"refId\s*\|\->\s*(\d+)", msg)
+        return f'op:listen(refId={r.group(1) if r else "?"})'
+    if op == "op:deposit-gift":
+        g = re.search(r"giftId\s*\|\->\s*(\d+)", msg)
+        rcp = re.search(r"recipient\s*\|\->\s*\"([^\"]*)\"", msg)
+        pw = re.search(r"pw\s*\|\->\s*(\d+)", msg)
+        return (
+            f'op:deposit-gift(gid={g.group(1) if g else "?"}, '
+            f'recipient={rcp.group(1) if rcp else "?"}, '
+            f'pw={pw.group(1) if pw else "?"})'
+        )
+    if op == "op:withdraw-gift":
+        g = re.search(r"giftId\s*\|\->\s*(\d+)", msg)
+        gifter = re.search(r"gifter\s*\|\->\s*\"([^\"]*)\"", msg)
+        pw = re.search(r"withdrawPromiseRefId\s*\|\->\s*(\d+)", msg)
+        return (
+            f'op:withdraw-gift(gid={g.group(1) if g else "?"}, '
+            f'gifter={gifter.group(1) if gifter else "?"}, '
+            f'pw={pw.group(1) if pw else "?"})'
+        )
     return op
 
 
@@ -253,11 +277,11 @@ def note_from_last_action(fields: dict[str, str]) -> str | None:
         if tag == "local":
             return (
                 f"Note over {esc(act)}: PeerSend local seq={esc(seq)} ref={esc(ref)} "
-                f"(naive shortcut to terminal; can race pipelined lower seq still in flight)"
+                f"(naive shorten to terminal; can race pipelined lower seq still in flight)"
             )
-        if tag == "shortcut":
+        if tag == "shorten":
             return (
-                f"Note over {esc(act)}: PeerSend shortcut seq={esc(seq)} ref-{esc(ref)} "
+                f"Note over {esc(act)}: PeerSend shorten seq={esc(seq)} ref-{esc(ref)} "
                 f"to shortenEntry={esc(se)} (post-shortening path)"
             )
         return (
@@ -285,11 +309,11 @@ def note_from_last_action(fields: dict[str, str]) -> str | None:
     if name == "ReceiveNetwork":
         kind = fields.get("kind", "")
         fro, to = fields.get("from", "?"), fields.get("to", "?")
-        if kind == "resolve-notify":
+        if kind == "resolve":
             pr = fields.get("promise", "?")
             return (
                 f"Note over {esc(to)}: ReceiveNetwork {esc(fro)}->>{esc(to)} "
-                f"resolve-notify p={esc(pr)} (resolver tells client p1 is settled)"
+                f"resolve p={esc(pr)} (resolver tells client p1 is settled)"
             )
         if kind == "deliver-terminal":
             seq = fields.get("seq", "?")
@@ -316,6 +340,53 @@ def note_from_last_action(fields: dict[str, str]) -> str | None:
                 f"Note over {esc(fro)},{esc(to)}: op:flush {esc(kind)} "
                 f"hop={esc(hop)} target={esc(tgt)}"
             )
+        if kind == "listen":
+            ref = fields.get("refId", "?")
+            replied = fields.get("replied", "?")
+            return (
+                f"Note over {esc(fro)},{esc(to)}: ReceiveNetwork op:listen "
+                f"refId={esc(ref)} reply={esc(replied)}"
+            )
+        if kind == "flush":
+            ref = fields.get("refId", "?")
+            return (
+                f"Note over {esc(fro)},{esc(to)}: ReceiveNetwork op:flush "
+                f"refId={esc(ref)}"
+            )
+        if kind == "flush-ack":
+            ref = fields.get("refId", "?")
+            return (
+                f"Note over {esc(fro)},{esc(to)}: ReceiveNetwork op:flush-ack "
+                f"refId={esc(ref)}"
+            )
+        if kind == "deposit-gift":
+            gid = fields.get("giftId", "?")
+            rcp = fields.get("recipient", "?")
+            pw = fields.get("pw", "?")
+            return (
+                f"Note over {esc(fro)},{esc(to)}: ReceiveNetwork op:deposit-gift "
+                f"gid={esc(gid)} recipient={esc(rcp)} pw={esc(pw)} "
+                f"(pre-mint LocalPromise(pw))"
+            )
+        if kind == "withdraw-gift":
+            gid = fields.get("giftId", "?")
+            gifter = fields.get("gifter", "?")
+            pw = fields.get("pw", "?")
+            acc = fields.get("accepted", "?")
+            return (
+                f"Note over {esc(fro)},{esc(to)}: ReceiveNetwork op:withdraw-gift "
+                f"gid={esc(gid)} gifter={esc(gifter)} pw={esc(pw)} accepted={esc(acc)}"
+            )
+        if kind == "resolve-handoff":
+            tr = fields.get("targetRefId", "?")
+            pw = fields.get("pw", "?")
+            tgt = fields.get("targetHost", "?")
+            ch = fields.get("chain", "?")
+            return (
+                f"Note over {esc(fro)},{esc(to)}: ReceiveNetwork op:resolve "
+                f"desc:handoff-give targetRefId={esc(tr)} pw={esc(pw)} "
+                f"targetHost={esc(tgt)} chain={esc(ch)}"
+            )
         return None
     if name == "Shorten":
         pol = fields.get("policy", "?")
@@ -325,6 +396,26 @@ def note_from_last_action(fields: dict[str, str]) -> str | None:
         return (
             f"Note over {esc(head)}: Shorten policy={esc(pol)} "
             f"entry={esc(ent)} headPipelined={esc(pipe)}"
+        )
+    if name == "Listen":
+        act = fields.get("actor", "?")
+        res = fields.get("resolver", "?")
+        ref = fields.get("refId", "?")
+        return (
+            f"Note over {esc(act)},{esc(res)}: Listen send op:listen refId={esc(ref)} "
+            f"(dynamic subscription)"
+        )
+    if name == "HandoffInitiate":
+        gifter = fields.get("gifter", "?")
+        rcp = fields.get("recipient", "?")
+        th = fields.get("targetHost", "?")
+        gid = fields.get("giftId", "?")
+        pw = fields.get("pw", "?")
+        er = fields.get("existingRefId", "?")
+        return (
+            f"Note over {esc(gifter)}: HandoffInitiate gifter={esc(gifter)} "
+            f"recipient={esc(rcp)} targetHost={esc(th)} gid={esc(gid)} "
+            f"pw={esc(pw)} existingRefId={esc(er)} (3PHO: send deposit + resolve)"
         )
     if name == "EJavaRelease":
         ent = fields.get("entry", "?")
@@ -425,7 +516,7 @@ if parts:
             hi, lo = inv
             story = (
                 f" First inversion: seq {hi} before seq {lo} (higher seq applied first — "
-                f"often parallel FIFO edges or a post-resolution shortcut racing in-flight traffic)."
+                f"often parallel FIFO edges or a post-resolution shorten racing in-flight traffic)."
             )
         lines_out.append(
             f"    Note over {esc(a)},{esc(b)}: EndToEndRefFIFO violated: "

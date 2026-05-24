@@ -1,17 +1,19 @@
------------------------- MODULE MC_NoPromiseResolution ------------------------
+-------------------------- MODULE Unit_LocalTarget_Direct --------------------------
 (***************************************************************************)
-(* NoPromiseResolution: listeners = {} so no op:resolve ever fires; every  *)
-(* ref-1 send rides the wire through the chain.  ChainLength = 2; host    *)
-(* existentially chosen at Init.  Expected: EndToEndRefFIFO_MC holds.     *)
+(* Pinned topology: HeadPeer = vatA hosts the LocalTarget at refId 2 AND   *)
+(* the LocalPromise at refId 1.  PeerSend's Route(vatA, 1) hits a          *)
+(* LocalPromise (queue) until ResolverResolve fires, then ProcessPending   *)
+(* drains via the LocalTarget at refId 2 (deliver locally).  Tests the     *)
+(* end-to-end self-routed pipeline.                                        *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
-Peers == {"vatA", "vatB"}
+Peers == {"vatA"}
 HeadPeer == "vatA"
 ChainLength == 2
 MaxRefId == ChainLength
-NumMessages == 3
+NumMessages == 2
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == FALSE
@@ -55,20 +57,17 @@ PS ==
         nextRefId <- nextRefId,
         lastAction <- lastAction
 
-Init == PS!Init
+Init ==
+    /\ PS!Init
+    /\ host = <<"vatA", "vatA">>
 
 Next == PS!Next
 
 Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
 TypeOK_MC == PS!TypeOK
-
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
-
 PairingInvariant_MC == PS!PairingInvariant
-
 NoMessageLost_MC == PS!NoMessageLost
-
 EventualDelivery_MC == PS!EventualDelivery
-
 ============================================================================

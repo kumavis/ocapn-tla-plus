@@ -1,44 +1,57 @@
 ------------------------- MODULE PromiseResolution -------------------------
 (***************************************************************************)
-(* Linear ref-chain, per-pair FIFO, HeadPeer emits op:deliver-only on ref 1. *)
+(* OCapN-flavored reference taxonomy with kind-discriminated dispatch.    *)
+(*                                                                         *)
+(* Per-peer refs[p][r] entries (one of):                                   *)
+(*   LocalTarget    -- a sink owned by p                                   *)
+(*   RemoteTarget   -- presence for someone else's LocalTarget             *)
+(*   LocalPromise   -- p is the resolver; holds queue, listeners,         *)
+(*                     resolution, flushPending, notified                  *)
+(*   RemotePromise  -- presence for someone else's LocalPromise; holds     *)
+(*                     localResolution, embargo, flushPhase                *)
+(*                                                                         *)
+(* Routing is a single dispatch over refs[self][r].kind plus the          *)
+(* localResolution / resolution recursion (local shortening at send time). *)
 (*                                                                         *)
 (* RoutingPolicy:                                                          *)
-(*   "NaivePromiseResolution" | "NoPromiseResolution" — original.         *)
-(*   "ShorteningUnsafe" — optional Shorten: client may jump to             *)
-(*      host[shortenEntry] (promise-to-promise / terminal shortening)      *)
-(*      without flush; breaks EndToEndRefFIFO when pipelined.               *)
-(*   "EJavaFlush" — CANONICAL DelayedRedirector model: head only learns    *)
-(*      from its immediate next hop (host[1]) that the latter's ref-1      *)
-(*      queue drained.  Local-only signal — no god-view.  Expected to      *)
-(*      VIOLATE EndToEndRefFIFO when shortenEntry > 2 (kpreid concern).     *)
-(*   "EJavaFlushGlobal" — UNREALISTIC strong variant kept only as a probe: *)
-(*      embargo holds until OldPathClear AND NoInFlightOldPath AND          *)
-(*      NoInFlightRef1 (god-view).  Shows what assumption the local        *)
-(*      design is missing; should make EndToEndRefFIFO hold.                *)
-(*   "OpFlushProtocol" — Ridley-style op:flush-fwd chain forwarded through *)
-(*      hop = shortenEntry, then op:flush-ack to head.  Each hop's         *)
-(*      precondition is only its own pending queue; ack-receive at head    *)
-(*      has no global check.                                                *)
+(*   "NaivePromiseResolution"  listener installs localResolution on        *)
+(*                              op:resolve; canonical naive 1-promise      *)
+(*                              chain that violates because HeadPeer's     *)
+(*                              pipelined ref-1 sends and HeadPeer's       *)
+(*                              direct delivery race.                      *)
+(*   "NoPromiseResolution"     no op:resolve ever fires (gated by policy); *)
+(*                              every ref-1 send rides the wire through    *)
+(*                              the chain.                                 *)
+(*   "ShorteningUnsafe"        install localResolution immediately on      *)
+(*                              op:resolve; no flush; race on long chains. *)
+(*   "EJavaFlush"              on op:resolve(r, _) at L: if the wire L    *)
+(*                              uses to forward through refs[L][r] still   *)
+(*                              has in-flight op:deliver-only sends        *)
+(*                              (RefHasPipelinedForwards), embargo +       *)
+(*                              remember value; wait for local signal      *)
+(*                              (channels[L][resolver] drained of          *)
+(*                              op:deliver-only); then install + lift.     *)
+(*                              Canonical kpreid race on 4-chains.         *)
+(*   "OpFlushProtocol"         resolver-initiated: ResolverResolve sends   *)
+(*                              op:flush(r) instead of op:resolve.         *)
+(*                              Listener embargos, drains its outgoing to  *)
+(*                              resolver, sends op:flush-ack. Resolver     *)
+(*                              waits for all acks AND its own queue+      *)
+(*                              outgoing-to-target drained, then sends     *)
+(*                              op:resolve. Holds.                         *)
 (***************************************************************************)
 
-EXTENDS Naturals, Sequences, TLC,
-        NaivePromiseResolution,
-        NoPromiseResolution,
-        ShorteningFlushRouting,
-        PeerState
+EXTENDS Naturals, Sequences, TLC, References, Network, PeerState
 
 VARIABLE lastAction
-VARIABLE shortenActive
-VARIABLE shortenEntry
-VARIABLE headPipelined
-VARIABLE headEmbargo
-VARIABLE opFlushPhase
 
 CONSTANT
     NumMessages,
-    ExtraOps,
     RoutingPolicy,
-    DebugTrace
+    DebugTrace,
+    EmptyInitialListeners,
+    EnableDynamicListen,
+    EnableHandoff
 
 ASSUME NumMessages \in Nat \ {0}
 ASSUME RoutingPolicy \in {
@@ -46,588 +59,1124 @@ ASSUME RoutingPolicy \in {
     "NoPromiseResolution",
     "ShorteningUnsafe",
     "EJavaFlush",
-    "EJavaFlushGlobal",
     "OpFlushProtocol"
 }
 ASSUME DebugTrace \in BOOLEAN
+ASSUME EmptyInitialListeners \in BOOLEAN
+ASSUME EnableDynamicListen \in BOOLEAN
+ASSUME EnableHandoff \in BOOLEAN
 
 ----------------------------------------------------------------------------
-(* Wire messages.  pos = chain position this hop targets.                   *)
+(* Wire messages. *)
 
-OpDeliverOnly(sender, sentOnRef, seq, pos) ==
+OpDeliverOnly(sender, sentOnRef, seq, refId) ==
     [op |-> "op:deliver-only",
      sender |-> sender,
      sentOnRef |-> sentOnRef,
      seq |-> seq,
-     pos |-> pos]
+     refId |-> refId]
 
-OpResolveNotify(promise) ==
-    [op |-> "op:resolve-notify",
-     promise |-> promise]
+OpResolve(targetRefId, value) ==
+    [op |-> "op:resolve",
+     targetRefId |-> targetRefId,
+     value |-> value]
 
-OpListen(subscriber, promise) ==
+OpFlush(refId) ==
+    [op |-> "op:flush",
+     refId |-> refId]
+
+OpFlushAck(refId) ==
+    [op |-> "op:flush-ack",
+     refId |-> refId]
+
+(* v0 globally-shared refIds: subscriber and resolver name the same logical
+   refId, so op:listen carries only one. *)
+OpListen(refId) ==
     [op |-> "op:listen",
-     subscriber |-> subscriber,
-     promise |-> promise]
+     refId |-> refId]
 
-(* op:flush chain: target = shortenEntry (first remote hop index after cut). *)
-OpFlushFwd(target, hop) ==
-    [op |-> "op:flush-fwd",
-     target |-> target,
-     hop |-> hop]
+(* Phase 3 -- opaque 3PHO wire messages. *)
 
-OpFlushAck ==
-    [op |-> "op:flush-ack"]
+(* op:deposit-gift: gifter -> targetHost.  Pre-authorize a withdraw.  The
+   gift slot is keyed by (gifter, giftId) on the target host.  The pw
+   refId is carried so the target host can pre-mint a LocalPromise at pw
+   into which pipelined sends on the recipient's RemotePromise(pw) can
+   queue before the recipient's op:withdraw-gift arrives. *)
+OpDepositGift(giftId, recipient, targetLocalRefId, pw) ==
+    [op |-> "op:deposit-gift",
+     giftId |-> giftId,
+     recipient |-> recipient,
+     targetLocalRefId |-> targetLocalRefId,
+     pw |-> pw]
 
-BaseMessages ==
-    { OpDeliverOnly(HeadPeer, r, n, pos) :
-        r \in {1}, n \in 1..NumMessages, pos \in Refs }
-    \cup { OpResolveNotify(i) : i \in PromiseRefs }
-    \cup { OpListen(sub, pr) : sub \in Peers, pr \in PromiseRefs }
-    \cup { OpFlushFwd(t, h) :
-            t \in 2..ChainLength, h \in 1..ChainLength }
-    \cup { OpFlushAck }
+(* op:withdraw-gift: recipient -> targetHost.  Claim the gift; on success
+   the target host mints a LocalPromise at withdrawPromiseRefId and resolves
+   it to the deposited target. *)
+OpWithdrawGift(giftId, gifter, withdrawPromiseRefId) ==
+    [op |-> "op:withdraw-gift",
+     giftId |-> giftId,
+     gifter |-> gifter,
+     withdrawPromiseRefId |-> withdrawPromiseRefId]
 
-Messages == BaseMessages \cup ExtraOps
+(* Resolution descriptor carried in op:resolve.value.
+   - desc:remote-target carries a plain (peer, refId) and is what the
+     listener installs as localResolution.
+   - desc:handoff-give is the opaque 3PHO introduction: gifter, targetHost,
+     and giftId; the recipient mints a withdraw-promise pw using its own
+     refId namespace, treats pw as a RemotePromise to targetHost, and learns
+     the actual ref only later when the target host's op:resolve carrying
+     desc:remote-target on pw arrives. *)
+
+DescRemoteTarget(peer, refId) ==
+    [desc |-> "desc:remote-target",
+     peer |-> peer,
+     refId |-> refId]
+
+(* pw is the new refId the gifter allocates for the recipient's withdraw-
+   promise.  Carrying it inside the descriptor decouples it from
+   targetRefId: targetRefId may be (a) an existing RemotePromise at the
+   recipient (chain case -- forwarder shortens to pw) or (b) pw itself
+   (standalone case -- recipient mints a brand-new ref). *)
+
+DescHandoffGive(gifter, targetHost, giftId, pw) ==
+    [desc |-> "desc:handoff-give",
+     gifter |-> gifter,
+     targetHost |-> targetHost,
+     giftId |-> giftId,
+     pw |-> pw]
+
+DescValues ==
+    {DescRemoteTarget(p, r) : p \in Peers, r \in RefIds}
+    \cup {DescHandoffGive(g, h, i, w) :
+            g \in Peers, h \in Peers, i \in GiftIds, w \in RefIds}
+
+Messages ==
+    { OpDeliverOnly(HeadPeer, 1, n, r) :
+        n \in 1..NumMessages, r \in RefIds }
+    \cup { OpResolve(r, v) : r \in RefIds, v \in DescValues }
+    \cup { OpFlush(r) : r \in RefIds }
+    \cup { OpFlushAck(r) : r \in RefIds }
+    \cup { OpListen(r) : r \in RefIds }
+    \cup { OpDepositGift(i, q, r, pw) :
+            i \in GiftIds, q \in Peers, r \in RefIds, pw \in RefIds }
+    \cup { OpWithdrawGift(i, g, r) :
+            i \in GiftIds, g \in Peers, r \in RefIds }
 
 DeliveredEntry ==
     [sender : Peers, ref : {1}, seq : 1..NumMessages]
 
 ----------------------------------------------------------------------------
+(* Chain-listener function: who listens on which LocalPromise.  Pinned at
+   chain bootstrap (the upstream peer subscribes to the downstream
+   promise).  Gated by policy: NoPromiseResolution clears all listeners so
+   no op:resolve ever fires. *)
 
-RouteSend(p, r) ==
-    IF RoutingPolicy = "ShorteningUnsafe"
-    THEN ShorteningFlushRouteSend(p, r, knownByPeer, host, TerminalPos,
-            shortenActive, shortenEntry, headEmbargo, TRUE)
-    ELSE IF RoutingPolicy \in {"EJavaFlush", "EJavaFlushGlobal",
-                                "OpFlushProtocol"}
-         THEN ShorteningFlushRouteSend(p, r, knownByPeer, host, TerminalPos,
-                 shortenActive, shortenEntry, headEmbargo, FALSE)
-    ELSE IF RoutingPolicy = "NaivePromiseResolution"
-         THEN NaivePromiseResolutionRouteSend(p, r, knownByPeer, host,
-                 TerminalPos)
-         ELSE NoPromiseResolutionRouteSend(p, r, knownByPeer, host,
-                 TerminalPos)
-
-OnReceiveResolution(p, pr) ==
-    IF RoutingPolicy = "NaivePromiseResolution"
-    THEN NaivePromiseResolutionOnReceiveSeq(p, pr)
-    ELSE NoPromiseResolutionOnReceiveSeq(p, pr)
+ChainListenersFor[r \in ChainRefs] ==
+    IF EmptyInitialListeners THEN {}
+    ELSE IF RoutingPolicy = "NoPromiseResolution" THEN {}
+    ELSE IF r = TerminalPos THEN {}
+    ELSE IF r = 1 THEN {HeadPeer}
+    ELSE {host[r - 1]}
 
 vars ==
-    << channels, host, resolved, knownByPeer,
-       localQueues, pending, sent, delivered, lastAction,
-       shortenActive, shortenEntry, headPipelined, headEmbargo, opFlushPhase >>
+    << channels, host, refs, sent, delivered,
+       gifts, nextGiftId, nextRefId, lastAction >>
 
 ----------------------------------------------------------------------------
+(* Initialization: pin host, build refs from MkChainRefs(host, listeners). *)
 
-Mark(rec) ==
-    IF DebugTrace THEN lastAction' = rec ELSE UNCHANGED lastAction
-
-RECURSIVE ChannelsAfterSends(_, _)
-ChannelsAfterSends(ch, sends) ==
-    IF sends = << >> THEN ch
-    ELSE
-        LET h == Head(sends)
-        IN ChannelsAfterSends(
-               NetworkAppend(ch, h.from, h.to, h.msg), Tail(sends))
-
-----------------------------------------------------------------------------
-(* Shortening: choose first wire hop index k (2..ChainLength).              *)
-(* Guard: promise 1 resolved and client learned it; all promises strictly *)
-(* before k are resolved (chain known through k-1).                        *)
-
-ShortenPre(k) ==
-    /\ k \in 2..ChainLength
-    /\ resolved[1]
-    /\ knownByPeer[HeadPeer][1]
-    /\ \A j \in 1..(k - 1) \cap PromiseRefs :
-          /\ resolved[j]
-          /\ knownByPeer[HeadPeer][j]
-
-OldPathClear ==
-    LET S == {pr \in PromiseRefs : pr < shortenEntry}
-    IN \A pr \in S : Len(pending[host[pr]][pr]) = 0
-
-NoInFlightOldPath ==
-    LET bad(m) ==
-          /\ m.op = "op:deliver-only"
-          /\ m.sentOnRef = 1
-          /\ m.pos < shortenEntry
-    IN ~\E p, q \in Peers :
-            \E i \in 1..Len(channels[p][q]) : bad(channels[p][q][i])
-
-(* Any op:deliver-only for ref 1 still on a wire queue (all positions).      *)
-
-NoInFlightRef1 ==
-    ~\E p, q \in Peers :
-        \E i \in 1..Len(channels[p][q]) :
-            LET m == channels[p][q][i]
-            IN /\ m.op = "op:deliver-only"
-               /\ m.sentOnRef = 1
-
-Shorten ==
-    /\ RoutingPolicy \in {"ShorteningUnsafe", "EJavaFlush",
-                          "EJavaFlushGlobal", "OpFlushProtocol"}
-    /\ ~shortenActive
-    /\ ~headEmbargo
-    /\ opFlushPhase = "idle"
-    /\ \E k \in 2..ChainLength :
-         /\ ShortenPre(k)
-         /\ shortenEntry' = k
-         /\ UNCHANGED
-                << host, resolved, knownByPeer,
-                   localQueues, pending, sent, delivered, headPipelined >>
-         /\ IF RoutingPolicy = "ShorteningUnsafe"
-            THEN /\ shortenActive' = TRUE
-                 /\ UNCHANGED << channels, headEmbargo, opFlushPhase >>
-            ELSE IF RoutingPolicy \in {"EJavaFlush", "EJavaFlushGlobal"}
-                 THEN IF headPipelined
-                      THEN /\ headEmbargo' = TRUE
-                           /\ UNCHANGED << shortenActive, channels, opFlushPhase >>
-                      ELSE /\ shortenActive' = TRUE
-                           /\ UNCHANGED << headEmbargo, channels, opFlushPhase >>
-                 ELSE (* OpFlushProtocol *)
-                      IF headPipelined
-                      THEN /\ headEmbargo' = TRUE
-                           /\ opFlushPhase' = "out"
-                           /\ channels' =
-                                   NetworkAppend(channels, HeadPeer,
-                                       host[1], OpFlushFwd(k, 1))
-                           /\ UNCHANGED shortenActive
-                      ELSE /\ shortenActive' = TRUE
-                           /\ UNCHANGED << headEmbargo, channels, opFlushPhase >>
-         /\ Mark([name |-> "Shorten",
-                  actor |-> HeadPeer,
-                  policy |-> RoutingPolicy,
-                  entry |-> k,
-                  pipelined |-> headPipelined])
-
-EJavaRelease ==
-    /\ RoutingPolicy \in {"EJavaFlush", "EJavaFlushGlobal"}
-    /\ headEmbargo
-    /\ ~shortenActive
-    (* CANONICAL "EJavaFlush": realistic DelayedRedirector signal — the
-       head only learns from its immediate next hop (host[1]) that the
-       latter's ref-1 queue has drained.  Cannot inspect anything past
-       host[1].                                                          *)
-    /\ IF RoutingPolicy = "EJavaFlush"
-       THEN /\ Len(pending[host[1]][1]) = 0
-       (* UNREALISTIC "EJavaFlushGlobal": god-view kept as a control —
-          drain entire old path AND no ref-1 anywhere on the network.    *)
-       ELSE /\ OldPathClear
-            /\ NoInFlightOldPath
-            /\ NoInFlightRef1
-    /\ shortenActive' = TRUE
-    /\ headEmbargo' = FALSE
-    /\ Mark([name |-> "EJavaRelease",
-             actor |-> HeadPeer,
-             entry |-> shortenEntry])
-    /\ UNCHANGED
-           << channels, host, resolved, knownByPeer,
-              localQueues, pending, sent, delivered,
-              shortenEntry, headPipelined, opFlushPhase >>
-
-----------------------------------------------------------------------------
-Init ==
-    /\ ReferencesInit
+PromiseResolutionInit ==
+    /\ host \in [ChainRefs -> Peers]
+    /\ refs = MkChainRefs(host, ChainListenersFor)
     /\ NetworkInit
     /\ PeerStateInit
     /\ lastAction = [name |-> "init"]
-    /\ shortenActive = FALSE
-    /\ shortenEntry = 2
-    /\ headPipelined = FALSE
-    /\ headEmbargo = FALSE
-    /\ opFlushPhase = "idle"
 
 ----------------------------------------------------------------------------
+(* Dispatch via the reference table.  Returns a record with .tag:
+     "deliver" - apply msg locally (peer hosts a LocalTarget)
+     "wire"    - append op:deliver-only to channels[self][.peer] with
+                 refId = .refId
+     "queue"   - append msg to refs[self][.refId].queue (a LocalPromise
+                 we own that's still unresolved)
+     "deadEnd" - no usable route; shouldn't happen in v0 chains *)
+
+(* Routing dispatch.  Returns one of:
+     [tag |-> "deliver", peer, refId]      apply locally (LocalTarget sink)
+     [tag |-> "wire",    peer, refId]      append op:deliver-only on
+                                           channels[self][peer] with refId
+     [tag |-> "queue",   peer, refId]      enqueue into local LocalPromise.queue
+     [tag |-> "hold",    peer, refId]      enqueue into local RemotePromise.pending
+                                           (OpFlushProtocol embargo)
+     [tag |-> "deadEnd"]                   unallocated; shouldn't happen *)
+
+RECURSIVE RouteRec(_, _)
+RouteRec(self, r) ==
+    LET entry == refs[self][r]
+    IN IF entry = EntryNone THEN [tag |-> "deadEnd"]
+       ELSE IF entry.kind = "LocalTarget"
+            THEN [tag |-> "deliver", peer |-> self, refId |-> r]
+       ELSE IF entry.kind = "RemoteTarget"
+            THEN [tag |-> "wire",
+                  peer |-> entry.targetPeer,
+                  refId |-> entry.targetRefId]
+       ELSE IF entry.kind = "LocalPromise"
+            THEN IF \/ entry.resolution = ResNone
+                    \/ Len(entry.queue) > 0
+                 THEN [tag |-> "queue", peer |-> self, refId |-> r]
+                 ELSE RouteRec(self, entry.resolution.refId)
+       ELSE (* RemotePromise *)
+            IF /\ RoutingPolicy = "OpFlushProtocol"
+               /\ \/ entry.embargo
+                  \/ Len(entry.pending) > 0
+            THEN [tag |-> "hold", peer |-> self, refId |-> r]
+            ELSE IF \/ entry.localResolution = ResNone
+                    \/ entry.embargo
+                 THEN [tag |-> "wire",
+                       peer |-> entry.resolverPeer,
+                       refId |-> entry.resolverRefId]
+                 ELSE RouteRec(self, entry.localResolution.refId)
+
+Route(self, r) == RouteRec(self, r)
+
+(* RefHasPipelinedForwards: predicate "peer p has at least one in-flight
+   op:deliver-only that p previously forwarded through refs[p][r]".
+   Parameterized by the ref under resolution; locally observable (p reads
+   only its own outgoing buffer to the resolver of r).  Used by EJavaFlush
+   to skip embargo when no pre-resolve traffic exists on the about-to-be-
+   shortened path.
+
+   For an unresolved RemotePromise(r), Route(p, r) yields wire(resolverPeer,
+   resolverRefId), so a previously-forwarded send via r sits on
+   channels[p][resolverPeer] with refId = resolverRefId.  Messages with
+   different refIds, or on channels to other peers, came from different
+   refs and are irrelevant to this resolution.
+
+   Defensive: returns FALSE for non-RemotePromise entries so callers can
+   evaluate it inside a LET without separate kind guards. *)
+RefHasPipelinedForwards(p, r) ==
+    LET entry == refs[p][r]
+    IN /\ entry # EntryNone
+       /\ entry.kind = "RemotePromise"
+       /\ \E i \in 1..Len(channels[p][entry.resolverPeer]) :
+              LET m == channels[p][entry.resolverPeer][i]
+              IN /\ m.op = "op:deliver-only"
+                 /\ m.refId = entry.resolverRefId
+
+ChannelHasDeliverOnly(p, q) ==
+    \E i \in 1..Len(channels[p][q]) :
+        /\ channels[p][q][i].op = "op:deliver-only"
+
+----------------------------------------------------------------------------
+Mark(rec) ==
+    IF DebugTrace THEN lastAction' = rec ELSE UNCHANGED lastAction
+
+HandoffVarsUnchanged ==
+    UNCHANGED << gifts, nextGiftId, nextRefId >>
+
+----------------------------------------------------------------------------
+(* PeerSend (HeadPeer only): originates a fresh op:deliver-only on ref 1. *)
+
 PeerSend ==
     LET sender == HeadPeer
-        res1 == host[1]
-        r == 1
+        seqN == sent + 1
+        route == Route(sender, 1)
+        msg == OpDeliverOnly(sender, 1, seqN, route.refId)
     IN
         /\ sent < NumMessages
-        (* While a flush is in progress, the head must not enqueue new        *)
-        (* ref-1 traffic; that would land behind the flush token on the old  *)
-        (* chain and then race the post-ack shortcut at the entry vat.       *)
-        /\ ~headEmbargo
-        /\ LET n == sent + 1
-               m == OpDeliverOnly(sender, r, n, 1)
-               tag == RouteSend(sender, r)
-           IN
-           /\ sent' = n
-           /\ headPipelined' =
-                  IF RoutingPolicy \in
-                         {"ShorteningUnsafe", "EJavaFlush",
-                          "EJavaFlushGlobal", "OpFlushProtocol"}
-                  THEN headPipelined \/ (tag = "viaResolver")
-                  ELSE headPipelined
-           /\ (CASE
-                     tag = "local"
-                       -> /\ localQueues' =
-                               [localQueues EXCEPT ![sender] = Append(@,
-                                   OpDeliverOnly(sender, r, n, TerminalPos))]
-                          /\ UNCHANGED << channels, pending >>
-                     [] tag = "viaResolver"
-                       (* Always queue at the resolver's pending; never let
-                          the head bypass host[1] directly to host[2]
-                          (would open a second FIFO into host[2] alongside
-                          ProcessPending's channels[host[1]][host[2]]).  *)
-                       -> /\ pending' =
-                              [pending EXCEPT
-                                  ![res1] =
-                                      [pending[res1] EXCEPT
-                                          ![1] =
-                                              Append(pending[res1][1], m)]]
-                          /\ UNCHANGED channels
-                          /\ UNCHANGED localQueues
-                     [] tag = "shortcut"
-                       -> LET mS ==
-                                OpDeliverOnly(sender, r, n, shortenEntry)
-                              tgtHost == host[shortenEntry]
-                              hopFromS ==
-                                  IF tgtHost = sender THEN res1 ELSE sender
-                          IN /\ channels' =
-                                  NetworkAppend(channels, hopFromS,
-                                      tgtHost, mS)
-                             /\ UNCHANGED pending
-                             /\ UNCHANGED localQueues
-                     [] OTHER -> FALSE)
-           /\ UNCHANGED << host, resolved, knownByPeer, delivered,
-                  shortenActive, shortenEntry, headEmbargo, opFlushPhase >>
-           /\ Mark([name |-> "PeerSend",
-                    actor |-> sender,
-                    resolver |-> res1,
-                    ref |-> r,
-                    seq |-> n,
-                    tag |-> tag,
-                    shortenEntry |-> shortenEntry])
+        /\ sent' = seqN
+        /\ (CASE route.tag = "wire"
+                -> /\ channels' =
+                       NetworkAppend(channels, sender, route.peer, msg)
+                   /\ UNCHANGED << refs, delivered >>
+             [] route.tag = "deliver"
+                -> /\ delivered' =
+                       Append(delivered,
+                              [sender |-> sender, ref |-> 1, seq |-> seqN])
+                   /\ UNCHANGED << channels, refs >>
+             [] route.tag = "queue"
+                -> /\ refs' =
+                       [refs EXCEPT
+                           ![route.peer][route.refId].queue =
+                               Append(@, msg)]
+                   /\ UNCHANGED << channels, delivered >>
+             [] route.tag = "hold"
+                -> /\ refs' =
+                       [refs EXCEPT
+                           ![route.peer][route.refId].pending =
+                               Append(@, msg)]
+                   /\ UNCHANGED << channels, delivered >>
+             [] OTHER -> FALSE)
+        /\ UNCHANGED << host >>
+        /\ HandoffVarsUnchanged
+        /\ Mark([name |-> "PeerSend",
+                 actor |-> sender,
+                 seq |-> seqN,
+                 ref |-> 1,
+                 tag |-> route.tag,
+                 toPeer |-> route.peer,
+                 toRefId |-> route.refId])
 
 ----------------------------------------------------------------------------
-LocalDeliver ==
-    \E p \in Peers :
-        /\ Len(localQueues[p]) > 0
-        /\ LET m == Head(localQueues[p])
+(* ProcessPending: drain one message from a resolved LocalPromise.queue. *)
+
+ProcessPending ==
+    \E p \in Peers : \E r \in DOMrefs(p) :
+        /\ refs[p][r].kind = "LocalPromise"
+        /\ refs[p][r].resolution # ResNone
+        /\ Len(refs[p][r].queue) > 0
+        /\ LET msg == Head(refs[p][r].queue)
+               restQueue == Tail(refs[p][r].queue)
+               nextR == refs[p][r].resolution.refId
+               route == Route(p, nextR)
            IN
-           /\ m.op = "op:deliver-only"
-           /\ m.pos = TerminalPos
-           /\ localQueues' = [localQueues EXCEPT ![p] = Tail(@)]
-           /\ delivered' =
-                Append(delivered,
-                       [sender |-> m.sender,
-                        ref |-> m.sentOnRef,
-                        seq |-> m.seq])
-           /\ UNCHANGED
-                  << channels, host, resolved, knownByPeer,
-                     pending, sent, shortenActive, shortenEntry,
-                     headPipelined, headEmbargo, opFlushPhase >>
-           /\ Mark([name |-> "LocalDeliver",
-                    actor |-> p,
-                    seq |-> m.seq,
-                    ref |-> m.sentOnRef])
+              /\ (CASE route.tag = "deliver"
+                      -> /\ delivered' =
+                             Append(delivered,
+                                    [sender |-> msg.sender,
+                                     ref |-> msg.sentOnRef,
+                                     seq |-> msg.seq])
+                         /\ refs' = [refs EXCEPT ![p][r].queue = restQueue]
+                         /\ UNCHANGED channels
+                   [] route.tag = "wire"
+                      -> LET m2 == [msg EXCEPT !.refId = route.refId]
+                         IN /\ channels' =
+                                NetworkAppend(channels, p, route.peer, m2)
+                            /\ refs' =
+                                [refs EXCEPT ![p][r].queue = restQueue]
+                            /\ UNCHANGED delivered
+                   [] route.tag = "queue"
+                      -> \* Local-shortening cascade: spill onto another
+                         \* LocalPromise's queue on the same peer.
+                         /\ refs' =
+                              [refs EXCEPT
+                                  ![p][r].queue = restQueue,
+                                  ![p][route.refId].queue =
+                                      Append(refs[p][route.refId].queue,
+                                             msg)]
+                         /\ UNCHANGED << channels, delivered >>
+                   [] route.tag = "hold"
+                      -> \* Spill onto a held RemotePromise.pending on the
+                         \* same peer (OpFlush embargo).
+                         /\ refs' =
+                              [refs EXCEPT
+                                  ![p][r].queue = restQueue,
+                                  ![p][route.refId].pending =
+                                      Append(refs[p][route.refId].pending,
+                                             msg)]
+                         /\ UNCHANGED << channels, delivered >>
+                   [] OTHER -> FALSE)
+              /\ UNCHANGED << host, sent >>
+              /\ HandoffVarsUnchanged
+              /\ Mark([name |-> "ProcessPending",
+                       actor |-> p,
+                       fromRefId |-> r,
+                       nextRefId |-> nextR,
+                       tag |-> route.tag,
+                       seq |-> msg.seq])
 
 ----------------------------------------------------------------------------
+(* ProcessHold: drain one message from a RemotePromise.pending whose
+   embargo has been lifted (OpFlushProtocol: after op:resolve installs
+   localResolution and clears embargo). *)
+
+ProcessHold ==
+    \E p \in Peers : \E r \in DOMrefs(p) :
+        /\ refs[p][r].kind = "RemotePromise"
+        /\ ~refs[p][r].embargo
+        /\ Len(refs[p][r].pending) > 0
+        /\ LET msg == Head(refs[p][r].pending)
+               restPending == Tail(refs[p][r].pending)
+               route ==
+                   IF refs[p][r].localResolution # ResNone
+                   THEN Route(p, refs[p][r].localResolution.refId)
+                   ELSE [tag |-> "wire",
+                         peer |-> refs[p][r].resolverPeer,
+                         refId |-> refs[p][r].resolverRefId]
+           IN
+              /\ (CASE route.tag = "deliver"
+                      -> /\ delivered' =
+                             Append(delivered,
+                                    [sender |-> msg.sender,
+                                     ref |-> msg.sentOnRef,
+                                     seq |-> msg.seq])
+                         /\ refs' = [refs EXCEPT ![p][r].pending = restPending]
+                         /\ UNCHANGED channels
+                   [] route.tag = "wire"
+                      -> LET m2 == [msg EXCEPT !.refId = route.refId]
+                         IN /\ channels' =
+                                NetworkAppend(channels, p, route.peer, m2)
+                            /\ refs' =
+                                [refs EXCEPT ![p][r].pending = restPending]
+                            /\ UNCHANGED delivered
+                   [] route.tag = "queue"
+                      -> /\ refs' =
+                              [refs EXCEPT
+                                  ![p][r].pending = restPending,
+                                  ![p][route.refId].queue =
+                                      Append(refs[p][route.refId].queue,
+                                             msg)]
+                         /\ UNCHANGED << channels, delivered >>
+                   [] OTHER -> FALSE)
+              /\ UNCHANGED << host, sent >>
+              /\ HandoffVarsUnchanged
+              /\ Mark([name |-> "ProcessHold",
+                       actor |-> p,
+                       refId |-> r,
+                       tag |-> route.tag,
+                       seq |-> msg.seq])
+
+----------------------------------------------------------------------------
+(* ResolverResolve: peer p (= host[r]) resolves its LocalPromise at refId r.
+   Behavior depends on the resolution's kind (Target vs Promise),
+   RoutingPolicy, and listener set. *)
+
+ChainResolutionFor(r) ==
+    IF r >= TerminalPos THEN ResNone
+    ELSE ResRef(host[r + 1], r + 1)
+
+IsResolutionTarget(p, res) ==
+    /\ res # ResNone
+    /\ res.refId \in DOMrefs(p)
+    /\ refs[p][res.refId].kind \in {"LocalTarget", "RemoteTarget"}
+
+ResolveValueFor(p, res) ==
+    LET targetEntry == refs[p][res.refId]
+    IN IF targetEntry.kind = "LocalTarget"
+       THEN DescRemoteTarget(p, res.refId)
+       ELSE \* RemoteTarget
+            DescRemoteTarget(targetEntry.targetPeer, targetEntry.targetRefId)
+
+(* Append `msg` to channels[p][q] for each q in `qs`. *)
+AppendToMany(ch, p, qs, msg) ==
+    [ch EXCEPT ![p] =
+        [q \in Peers |->
+            IF q \in qs THEN Append(ch[p][q], msg) ELSE ch[p][q]]]
+
 ResolverResolve ==
-    \E i \in PromiseRefs :
-        /\ ~resolved[i]
-        /\ LET res == host[i]
-               notifyMsg == OpResolveNotify(i)
-               chB ==
-                   [channels EXCEPT ![res] =
-                       [q \in Peers |->
-                           IF q = res
-                           THEN channels[res][q]
-                           ELSE Append(channels[res][q], notifyMsg)]]
+    \E p \in Peers : \E r \in DOMrefs(p) :
+        /\ refs[p][r].kind = "LocalPromise"
+        /\ refs[p][r].resolution = ResNone
+        /\ r \in ChainRefs   \* handoff LocalPromises (pw > ChainLength) are
+                              \* resolved exclusively by ReceiveOpWithdrawGift
+        /\ host[r] = p
+        /\ LET res == ChainResolutionFor(r)
+               listeners == refs[p][r].listeners
+               isTarget == IsResolutionTarget(p, res)
+               fireOpResolveNow ==
+                   /\ isTarget
+                   /\ listeners # {}
+                   /\ RoutingPolicy \in
+                          {"NaivePromiseResolution",
+                           "ShorteningUnsafe",
+                           "EJavaFlush"}
+               fireOpFlush ==
+                   /\ isTarget
+                   /\ listeners # {}
+                   /\ RoutingPolicy = "OpFlushProtocol"
+               value ==
+                   IF isTarget THEN ResolveValueFor(p, res) ELSE ResNone
            IN
-           /\ resolved' = [resolved EXCEPT ![i] = TRUE]
-           /\ knownByPeer' = [knownByPeer EXCEPT ![res][i] = TRUE]
-           /\ channels' = ChannelsAfterSends(chB, OnReceiveResolution(res, i))
-           /\ UNCHANGED
-                  << host, localQueues, pending, sent, delivered,
-                     shortenActive, shortenEntry, headPipelined,
-                     headEmbargo, opFlushPhase >>
-           /\ Mark([name |-> "ResolverResolve",
-                    actor |-> res,
-                    promise |-> i])
+              /\ res # ResNone
+              /\ (CASE fireOpResolveNow
+                       -> /\ refs' =
+                              [refs EXCEPT
+                                  ![p][r].resolution = res,
+                                  ![p][r].notified = TRUE]
+                          /\ channels' =
+                              AppendToMany(channels, p, listeners,
+                                  OpResolve(r, value))
+                   [] fireOpFlush
+                       -> /\ refs' =
+                              [refs EXCEPT
+                                  ![p][r].resolution = res,
+                                  ![p][r].flushPending = listeners]
+                          /\ channels' =
+                              AppendToMany(channels, p, listeners,
+                                  OpFlush(r))
+                   [] OTHER
+                       -> /\ refs' =
+                              [refs EXCEPT ![p][r].resolution = res]
+                          /\ UNCHANGED channels)
+              /\ UNCHANGED << host, sent, delivered >>
+              /\ HandoffVarsUnchanged
+              /\ Mark([name |-> "ResolverResolve",
+                       actor |-> p,
+                       refId |-> r,
+                       resKind |-> IF isTarget THEN "Target" ELSE "Promise",
+                       notified |-> fireOpResolveNow,
+                       flushed |-> fireOpFlush])
 
 ----------------------------------------------------------------------------
+(* Send op:resolve to listeners after flush round-trip completes.          *)
+(* Preconditions:                                                          *)
+(*   - resolution set, target-bearing                                      *)
+(*   - flushPending = {}  (all listeners acked)                            *)
+(*   - notified = FALSE                                                    *)
+(*   - resolver's own queue at this LocalPromise is empty                  *)
+(*   - resolver's outgoing channel to the target peer is drained of       *)
+(*     op:deliver-only (no in-flight pre-resolve forwards)                *)
+
+SendOpResolveAfterFlush ==
+    \E p \in Peers : \E r \in DOMrefs(p) :
+        /\ RoutingPolicy = "OpFlushProtocol"
+        /\ refs[p][r].kind = "LocalPromise"
+        /\ refs[p][r].resolution # ResNone
+        /\ IsResolutionTarget(p, refs[p][r].resolution)
+        /\ refs[p][r].flushPending = {}
+        /\ ~refs[p][r].notified
+        /\ Len(refs[p][r].queue) = 0
+        /\ LET res == refs[p][r].resolution
+               value == ResolveValueFor(p, res)
+               targetEntry == refs[p][res.refId]
+               targetPeer ==
+                   IF targetEntry.kind = "RemoteTarget"
+                   THEN targetEntry.targetPeer
+                   ELSE p
+               listeners == refs[p][r].listeners
+           IN
+              /\ targetPeer = p \/ ~ChannelHasDeliverOnly(p, targetPeer)
+              /\ refs' =
+                   [refs EXCEPT ![p][r].notified = TRUE]
+              /\ channels' =
+                   AppendToMany(channels, p, listeners,
+                       OpResolve(r, value))
+              /\ UNCHANGED << host, sent, delivered >>
+              /\ HandoffVarsUnchanged
+              /\ Mark([name |-> "SendOpResolveAfterFlush",
+                       actor |-> p,
+                       refId |-> r])
+
+----------------------------------------------------------------------------
+(* ReceiveNetwork: dispatch on the head of channels[from][to]. *)
+
 ReceiveNetwork ==
     \E from, to \in Peers :
         /\ NetworkNonEmpty(channels, from, to)
         /\ LET msg == NetworkHead(channels, from, to)
                ch0 == NetworkTail(channels, from, to)
            IN
-           \/ /\ msg.op = "op:flush-fwd"
-              /\ LET t == msg.target
-                     h == msg.hop
-                     hopPeer == host[h]
-                     prevPeer == IF h = 1 THEN HeadPeer ELSE host[h - 1]
-                 IN
-                    /\ to = hopPeer
-                    /\ from = prevPeer
-                    /\ RoutingPolicy = "OpFlushProtocol"
-                    (* Ridley-style hop-by-hop drain.  Each non-terminal
-                       hop drains its ref-1 pending into the downstream
-                       FIFO BEFORE forwarding/acking, so the flush token
-                       trails all ref-1 messages on the same
-                       channels[host[h]][host[h+1]] FIFO.                 *)
-                    /\ IF h = TerminalPos
-                       THEN TRUE
-                       ELSE Len(pending[to][h]) = 0
-                    /\ IF h < t
-                       (* Continue forwarding to the next hop.            *)
-                       THEN /\ channels' =
-                                NetworkAppend(ch0, to, host[h + 1],
-                                    OpFlushFwd(t, h + 1))
-                            /\ UNCHANGED
-                                   << host, resolved, knownByPeer,
-                                      localQueues, pending, sent,
-                                      delivered, shortenActive,
-                                      shortenEntry, headPipelined,
-                                      headEmbargo, opFlushPhase >>
-                       (* h = t: the entry vat itself.  By FIFO of the
-                          incoming wire, all pre-shortening ref-1 msgs
-                          have already been received at host[t] (and
-                          either delivered, pending'd, or bypassed
-                          downstream).  Now ack to head so its shortcut
-                          on the FRESH wire channels[head][host[t]] cannot
-                          race anything on channels[host[t-1]][host[t]]. *)
-                       ELSE /\ channels' =
-                                NetworkAppend(ch0, to, HeadPeer, OpFlushAck)
-                            /\ UNCHANGED
-                                   << host, resolved, knownByPeer,
-                                      localQueues, pending, sent,
-                                      delivered, shortenActive,
-                                      shortenEntry, headPipelined,
-                                      headEmbargo, opFlushPhase >>
-                    /\ Mark([name |-> "ReceiveNetwork",
-                             kind |-> IF h < t
-                                      THEN "flush-fwd"
-                                      ELSE "flush-ack-send",
-                             hop |-> h,
-                             target |-> t,
-                             from |-> from,
-                             to |-> to])
-           \/ /\ msg.op = "op:flush-ack"
-              /\ to = HeadPeer
-              /\ RoutingPolicy = "OpFlushProtocol"
-              /\ headEmbargo
-              (* Local-only: receipt of the ack is itself the signal.    *)
-              /\ headEmbargo' = FALSE
-              /\ shortenActive' = TRUE
-              /\ opFlushPhase' = "idle"
-              /\ channels' = ch0
-              /\ UNCHANGED
-                     << host, resolved, knownByPeer,
-                        localQueues, pending, sent, delivered,
-                        shortenEntry, headPipelined >>
-              /\ Mark([name |-> "ReceiveNetwork",
-                       kind |-> "flush-ack-head",
-                       from |-> from,
-                       to |-> to])
-           \/ /\ msg.op = "op:resolve-notify"
-              /\ LET pr == msg.promise
-                 IN
-                 /\ knownByPeer' = [knownByPeer EXCEPT ![to][pr] = TRUE]
-                 /\ channels' =
-                        ChannelsAfterSends(ch0, OnReceiveResolution(to, pr))
-                 /\ UNCHANGED
-                        << host, resolved, localQueues,
-                           pending, sent, delivered,
-                           shortenActive, shortenEntry, headPipelined,
-                           headEmbargo, opFlushPhase >>
-                 /\ Mark([name |-> "ReceiveNetwork",
-                          kind |-> "resolve-notify",
-                          from |-> from,
-                          to |-> to,
-                          promise |-> pr])
-           \/ /\ msg.op = "op:deliver-only"
-              /\ to = host[msg.pos]
-              /\ LET s == msg.sender
-                     seq == msg.seq
-                     ref == msg.sentOnRef
-                     pos == msg.pos
-                 IN
-                 \/ /\ pos = TerminalPos
-                    /\ delivered' =
-                            Append(delivered,
-                                   [sender |-> s, ref |-> ref, seq |-> seq])
-                    /\ channels' = ch0
-                    /\ UNCHANGED
-                           << host, resolved, knownByPeer,
-                              localQueues, pending, sent,
-                              shortenActive, shortenEntry, headPipelined,
-                              headEmbargo, opFlushPhase >>
-                    /\ Mark([name |-> "ReceiveNetwork",
-                             kind |-> "deliver-terminal",
-                             from |-> from,
-                             to |-> to,
-                             seq |-> seq,
-                             ref |-> ref])
-                 \/ /\ pos \in PromiseRefs
-                    /\ IF \/ ~resolved[pos]
-                          \/ Len(pending[to][pos]) > 0
-                       THEN /\ pending' =
-                                [pending EXCEPT
-                                    ![to] =
-                                        [pending[to] EXCEPT
-                                            ![pos] =
-                                                Append(pending[to][pos],
-                                                       msg)]]
-                            /\ channels' = ch0
-                            /\ UNCHANGED
-                                   << host, resolved, knownByPeer,
-                                      localQueues, sent, delivered,
-                                      shortenActive, shortenEntry,
-                                      headPipelined, headEmbargo,
-                                      opFlushPhase >>
-                            /\ Mark([name |-> "ReceiveNetwork",
-                                     kind |-> "enqueue-pending",
-                                     from |-> from,
-                                     to |-> to,
-                                     seq |-> seq,
-                                     pos |-> pos])
-                       ELSE LET nextPos == pos + 1
-                                m2 == [msg EXCEPT !.pos = nextPos]
-                            IN
-                               IF nextPos = TerminalPos
-                               THEN IF host[TerminalPos] = to
-                                    THEN /\ delivered' =
-                                             Append(delivered,
-                                                    [sender |-> s,
-                                                     ref |-> ref,
-                                                     seq |-> seq])
-                                         /\ channels' = ch0
-                                         /\ UNCHANGED
-                                                << host, resolved,
-                                                   knownByPeer,
-                                                   localQueues,
-                                                   pending, sent,
-                                                   shortenActive,
-                                                   shortenEntry,
-                                                   headPipelined,
-                                                   headEmbargo,
-                                                   opFlushPhase >>
-                                         /\ Mark([name |-> "ReceiveNetwork",
-                                                  kind |-> "forward-deliver",
-                                                  from |-> from,
-                                                  to |-> to,
-                                                  seq |-> seq,
-                                                  pos |-> pos])
-                                    ELSE /\ channels' =
-                                             NetworkAppend(ch0, to,
-                                                 host[TerminalPos], m2)
-                                         /\ UNCHANGED
-                                                << host, resolved,
-                                                   knownByPeer,
-                                                   localQueues,
-                                                   pending, sent,
-                                                   delivered,
-                                                   shortenActive,
-                                                   shortenEntry,
-                                                   headPipelined,
-                                                   headEmbargo,
-                                                   opFlushPhase >>
-                                         /\ Mark([name |-> "ReceiveNetwork",
-                                                  kind |-> "forward-wire",
-                                                  from |-> from,
-                                                  to |-> to,
-                                                  seq |-> seq,
-                                                  pos |-> pos,
-                                                  nextPos |-> nextPos])
-                               ELSE LET hopR ==
-                                            IF host[nextPos] = to
-                                            THEN HeadPeer
-                                            ELSE to
-                                    IN /\ channels' =
-                                           NetworkAppend(ch0, hopR,
-                                               host[nextPos], m2)
-                                    /\ UNCHANGED
-                                           << host, resolved, knownByPeer,
-                                              localQueues, pending, sent,
-                                              delivered,
-                                              shortenActive, shortenEntry,
-                                              headPipelined, headEmbargo,
-                                              opFlushPhase >>
-                                    /\ Mark([name |-> "ReceiveNetwork",
-                                             kind |-> "forward-wire",
-                                             from |-> from,
-                                             to |-> to,
-                                             seq |-> seq,
-                                             pos |-> pos,
-                                             nextPos |-> nextPos])
+              \/ \* op:deliver-only
+                 /\ msg.op = "op:deliver-only"
+                 /\ LET r == msg.refId
+                        entry == refs[to][r]
+                    IN
+                       /\ entry # EntryNone
+                       /\ (CASE entry.kind = "LocalTarget"
+                                -> /\ delivered' =
+                                         Append(delivered,
+                                                [sender |-> msg.sender,
+                                                 ref |-> msg.sentOnRef,
+                                                 seq |-> msg.seq])
+                                   /\ channels' = ch0
+                                   /\ UNCHANGED refs
+                                   /\ Mark([name |-> "ReceiveNetwork",
+                                            kind |-> "deliver-terminal",
+                                            from |-> from,
+                                            to |-> to,
+                                            seq |-> msg.seq,
+                                            refId |-> r])
+                            [] entry.kind = "LocalPromise"
+                                -> IF \/ entry.resolution = ResNone
+                                      \/ Len(entry.queue) > 0
+                                   THEN /\ refs' =
+                                            [refs EXCEPT
+                                                ![to][r].queue =
+                                                    Append(@, msg)]
+                                        /\ channels' = ch0
+                                        /\ UNCHANGED delivered
+                                        /\ Mark([name |-> "ReceiveNetwork",
+                                                 kind |-> "enqueue-pending",
+                                                 from |-> from,
+                                                 to |-> to,
+                                                 seq |-> msg.seq,
+                                                 refId |-> r])
+                                   ELSE LET nextR ==
+                                                entry.resolution.refId
+                                            route == Route(to, nextR)
+                                        IN
+                                           CASE route.tag = "deliver"
+                                                -> /\ delivered' =
+                                                        Append(delivered,
+                                                               [sender |-> msg.sender,
+                                                                ref |-> msg.sentOnRef,
+                                                                seq |-> msg.seq])
+                                                   /\ channels' = ch0
+                                                   /\ UNCHANGED refs
+                                                   /\ Mark([name |-> "ReceiveNetwork",
+                                                            kind |-> "forward-deliver",
+                                                            from |-> from,
+                                                            to |-> to,
+                                                            seq |-> msg.seq,
+                                                            refId |-> r])
+                                             [] route.tag = "wire"
+                                                -> LET m2 == [msg EXCEPT !.refId = route.refId]
+                                                   IN /\ channels' =
+                                                          NetworkAppend(ch0, to, route.peer, m2)
+                                                      /\ UNCHANGED << refs, delivered >>
+                                                      /\ Mark([name |-> "ReceiveNetwork",
+                                                               kind |-> "forward-wire",
+                                                               from |-> from,
+                                                               to |-> to,
+                                                               seq |-> msg.seq,
+                                                               refId |-> r,
+                                                               nextRefId |-> route.refId])
+                                             [] route.tag = "queue"
+                                                -> \* Local-shortening: spill into another
+                                                   \* LocalPromise's queue on the same peer.
+                                                   /\ refs' =
+                                                        [refs EXCEPT
+                                                            ![to][route.refId].queue =
+                                                                Append(refs[to][route.refId].queue,
+                                                                       msg)]
+                                                   /\ channels' = ch0
+                                                   /\ UNCHANGED delivered
+                                                   /\ Mark([name |-> "ReceiveNetwork",
+                                                            kind |-> "forward-queue",
+                                                            from |-> from,
+                                                            to |-> to,
+                                                            seq |-> msg.seq,
+                                                            refId |-> r])
+                                             [] OTHER -> FALSE
+                            [] entry.kind = "RemotePromise"
+                                -> LET route == Route(to, r)
+                                   IN CASE route.tag = "wire"
+                                          -> /\ channels' =
+                                                  NetworkAppend(ch0, to, route.peer,
+                                                      [msg EXCEPT !.refId = route.refId])
+                                             /\ UNCHANGED << refs, delivered >>
+                                             /\ Mark([name |-> "ReceiveNetwork",
+                                                      kind |-> "forward-remote",
+                                                      from |-> from,
+                                                      to |-> to,
+                                                      seq |-> msg.seq,
+                                                      refId |-> r])
+                                        [] route.tag = "deliver"
+                                          -> /\ delivered' =
+                                                  Append(delivered,
+                                                         [sender |-> msg.sender,
+                                                          ref |-> msg.sentOnRef,
+                                                          seq |-> msg.seq])
+                                             /\ channels' = ch0
+                                             /\ UNCHANGED refs
+                                             /\ Mark([name |-> "ReceiveNetwork",
+                                                      kind |-> "forward-remote-deliver",
+                                                      from |-> from,
+                                                      to |-> to,
+                                                      seq |-> msg.seq,
+                                                      refId |-> r])
+                                        [] route.tag = "queue"
+                                          -> /\ refs' =
+                                                  [refs EXCEPT
+                                                      ![to][route.refId].queue =
+                                                          Append(refs[to][route.refId].queue,
+                                                                 msg)]
+                                             /\ channels' = ch0
+                                             /\ UNCHANGED delivered
+                                             /\ Mark([name |-> "ReceiveNetwork",
+                                                      kind |-> "forward-remote-queue",
+                                                      from |-> from,
+                                                      to |-> to,
+                                                      seq |-> msg.seq,
+                                                      refId |-> r])
+                                        [] route.tag = "hold"
+                                          -> /\ refs' =
+                                                  [refs EXCEPT
+                                                      ![to][route.refId].pending =
+                                                          Append(refs[to][route.refId].pending,
+                                                                 msg)]
+                                             /\ channels' = ch0
+                                             /\ UNCHANGED delivered
+                                             /\ Mark([name |-> "ReceiveNetwork",
+                                                      kind |-> "forward-remote-hold",
+                                                      from |-> from,
+                                                      to |-> to,
+                                                      seq |-> msg.seq,
+                                                      refId |-> r])
+                                        [] OTHER -> FALSE
+                            [] entry.kind = "RemoteTarget"
+                                -> LET route == Route(to, r)
+                                   IN /\ route.tag = "wire"
+                                      /\ channels' =
+                                           NetworkAppend(ch0, to, route.peer,
+                                               [msg EXCEPT !.refId = route.refId])
+                                      /\ UNCHANGED << refs, delivered >>
+                                      /\ Mark([name |-> "ReceiveNetwork",
+                                               kind |-> "forward-remote-target",
+                                               from |-> from,
+                                               to |-> to,
+                                               seq |-> msg.seq,
+                                               refId |-> r])
+                            [] OTHER -> FALSE)
+                       /\ UNCHANGED << host, sent >>
+                       /\ HandoffVarsUnchanged
+              \/ \* op:resolve carrying desc:remote-target
+                 /\ msg.op = "op:resolve"
+                 /\ msg.value.desc = "desc:remote-target"
+                 /\ LET r == msg.targetRefId
+                        v == msg.value
+                        entry == refs[to][r]
+                        newLocalRes == ResRef(v.peer, v.refId)
+                        isPipelined == RefHasPipelinedForwards(to, r)
+                        \* Handoff withdraw-promise responses (refId allocated
+                        \* by HandoffInitiate above ChainLength) always
+                        \* install: the listener is the recipient and has no
+                        \* race-surface for the policy gating that applies to
+                        \* chain promise resolution.
+                        isHandoffPw == r > ChainLength
+                        installNow ==
+                            \/ isHandoffPw
+                            \/ RoutingPolicy = "NaivePromiseResolution"
+                            \/ RoutingPolicy = "ShorteningUnsafe"
+                            \/ /\ RoutingPolicy = "EJavaFlush"
+                               /\ ~isPipelined
+                            \/ RoutingPolicy = "OpFlushProtocol"
+                        embargoInstead ==
+                            /\ ~isHandoffPw
+                            /\ RoutingPolicy = "EJavaFlush"
+                            /\ isPipelined
+                    IN
+                       /\ entry # EntryNone
+                       /\ entry.kind = "RemotePromise"
+                       /\ channels' = ch0
+                       /\ (CASE installNow
+                                -> /\ refs' =
+                                       [refs EXCEPT
+                                           \* OpFlushProtocol path: clear
+                                           \* embargo (was set by op:flush);
+                                           \* now pending can drain.  Other
+                                           \* policies fall through here too;
+                                           \* embargo was already FALSE.
+                                           ![to][r].localResolution = newLocalRes,
+                                           ![to][r].embargo = FALSE]
+                            [] embargoInstead
+                                -> /\ refs' =
+                                       [refs EXCEPT
+                                           ![to][r].localResolution = newLocalRes,
+                                           ![to][r].embargo = TRUE]
+                            [] OTHER -> FALSE)
+                       /\ UNCHANGED << host, sent, delivered >>
+                       /\ HandoffVarsUnchanged
+                       /\ Mark([name |-> "ReceiveNetwork",
+                                kind |-> "resolve",
+                                from |-> from,
+                                to |-> to,
+                                refId |-> r,
+                                installed |-> installNow,
+                                embargoed |-> embargoInstead])
+              \/ \* op:resolve carrying desc:handoff-give (Phase 3 3PHO).
+                 \* Two cases dispatched by targetRefId vs pw:
+                 \*   - chain (forwarder): targetRefId is an existing
+                 \*     RemotePromise being shortened to pw; both refs[pw]
+                 \*     (new) and refs[targetRefId].localResolution are
+                 \*     installed.
+                 \*   - standalone: targetRefId == pw; the recipient just
+                 \*     mints the new RemotePromise at pw.
+                 /\ msg.op = "op:resolve"
+                 /\ msg.value.desc = "desc:handoff-give"
+                 /\ EnableHandoff
+                 /\ LET v == msg.value
+                        targetRefId == msg.targetRefId
+                        pw == v.pw
+                        gifter == v.gifter
+                        tgtHost == v.targetHost
+                        gid == v.giftId
+                        isChain == targetRefId # pw
+                    IN
+                       /\ refs[to][pw] = EntryNone
+                       /\ (CASE isChain
+                                -> /\ targetRefId \in DOMrefs(to)
+                                   /\ refs[to][targetRefId].kind = "RemotePromise"
+                                   /\ refs[to][targetRefId].localResolution = ResNone
+                                   /\ refs' =
+                                        [refs EXCEPT
+                                            ![to][pw] =
+                                                MkRemotePromise(tgtHost, pw,
+                                                    ResNone, FALSE, "idle",
+                                                    << >>, TRUE),
+                                            ![to][targetRefId].localResolution =
+                                                ResRef(to, pw)]
+                            [] OTHER
+                                -> /\ refs' =
+                                        [refs EXCEPT
+                                            ![to][pw] =
+                                                MkRemotePromise(tgtHost, pw,
+                                                    ResNone, FALSE, "idle",
+                                                    << >>, TRUE)])
+                       /\ channels' =
+                            NetworkAppend(ch0, to, tgtHost,
+                                OpWithdrawGift(gid, gifter, pw))
+                       /\ UNCHANGED << host, sent, delivered >>
+                       /\ HandoffVarsUnchanged
+                       /\ Mark([name |-> "ReceiveNetwork",
+                                kind |-> "resolve-handoff",
+                                from |-> from,
+                                to |-> to,
+                                targetRefId |-> targetRefId,
+                                pw |-> pw,
+                                gifter |-> gifter,
+                                targetHost |-> tgtHost,
+                                giftId |-> gid,
+                                chain |-> isChain])
+              \/ \* op:flush  (OpFlushProtocol only)
+                 /\ msg.op = "op:flush"
+                 /\ RoutingPolicy = "OpFlushProtocol"
+                 /\ LET r == msg.refId
+                        entry == refs[to][r]
+                    IN
+                       /\ entry # EntryNone
+                       /\ entry.kind = "RemotePromise"
+                       /\ refs' =
+                            [refs EXCEPT ![to][r].embargo = TRUE]
+                       /\ channels' = ch0
+                       /\ UNCHANGED << host, sent, delivered >>
+                       /\ HandoffVarsUnchanged
+                       /\ Mark([name |-> "ReceiveNetwork",
+                                kind |-> "flush",
+                                from |-> from,
+                                to |-> to,
+                                refId |-> r])
+              \/ \* op:flush-ack  (OpFlushProtocol only)
+                 /\ msg.op = "op:flush-ack"
+                 /\ RoutingPolicy = "OpFlushProtocol"
+                 /\ LET r == msg.refId
+                        entry == refs[to][r]
+                    IN
+                       /\ entry # EntryNone
+                       /\ entry.kind = "LocalPromise"
+                       /\ from \in entry.flushPending
+                       /\ refs' =
+                            [refs EXCEPT
+                                ![to][r].flushPending = entry.flushPending \ {from}]
+                       /\ channels' = ch0
+                       /\ UNCHANGED << host, sent, delivered >>
+                       /\ HandoffVarsUnchanged
+                       /\ Mark([name |-> "ReceiveNetwork",
+                                kind |-> "flush-ack",
+                                from |-> from,
+                                to |-> to,
+                                refId |-> r])
+              \/ \* op:listen  (Phase 2: dynamic subscription)
+                 /\ msg.op = "op:listen"
+                 /\ LET r == msg.refId
+                        entry == refs[to][r]
+                        res ==
+                            IF entry # EntryNone /\ entry.kind = "LocalPromise"
+                            THEN entry.resolution
+                            ELSE ResNone
+                        alreadyResolvedToTarget ==
+                            /\ res # ResNone
+                            /\ IsResolutionTarget(to, res)
+                    IN
+                       /\ entry # EntryNone
+                       /\ entry.kind = "LocalPromise"
+                       /\ (CASE alreadyResolvedToTarget
+                                -> \* Subscribe-to-already-resolved with a
+                                   \* terminal value: immediate op:resolve reply.
+                                   \* Listener is also recorded for bookkeeping.
+                                   LET value == ResolveValueFor(to, res)
+                                   IN /\ refs' =
+                                           [refs EXCEPT
+                                               ![to][r].listeners = @ \cup {from},
+                                               ![to][r].notified = TRUE]
+                                      /\ channels' =
+                                           NetworkAppend(ch0, to, from,
+                                               OpResolve(r, value))
+                            [] OTHER
+                                -> \* Unresolved, or resolution is a Promise
+                                   \* (terminal-only propagation: no immediate
+                                   \* op:resolve sent in this case).
+                                   /\ refs' =
+                                        [refs EXCEPT
+                                            ![to][r].listeners = @ \cup {from}]
+                                   /\ channels' = ch0)
+                       /\ UNCHANGED << host, sent, delivered >>
+                       /\ HandoffVarsUnchanged
+                       /\ Mark([name |-> "ReceiveNetwork",
+                                kind |-> "listen",
+                                from |-> from,
+                                to |-> to,
+                                refId |-> r,
+                                replied |-> alreadyResolvedToTarget])
+              \/ \* op:deposit-gift (Phase 3, target host).  In addition to
+                 \* recording the gift, the target host pre-mints a
+                 \* LocalPromise at pw so that pipelined sends from the
+                 \* recipient on RemotePromise(pw) have somewhere to queue
+                 \* before op:withdraw-gift arrives.  This is consistent with
+                 \* the OCapN opaque model: the target host knows pw via the
+                 \* deposit but does not learn the underlying target until
+                 \* the withdraw resolves the promise.
+                 /\ msg.op = "op:deposit-gift"
+                 /\ EnableHandoff
+                 /\ LET gid == msg.giftId
+                        rcp == msg.recipient
+                        tlr == msg.targetLocalRefId
+                        pw == msg.pw
+                        entry ==
+                            [kind |-> "gift",
+                             recipient |-> rcp,
+                             targetLocalRefId |-> tlr]
+                    IN
+                       /\ gifts[to][from][gid] = NoGift
+                       /\ refs[to][pw] = EntryNone
+                       /\ gifts' =
+                            [gifts EXCEPT ![to][from][gid] = entry]
+                       /\ refs' =
+                            [refs EXCEPT
+                                ![to][pw] =
+                                    MkLocalPromise(<< >>, {rcp}, ResNone, {},
+                                                   FALSE)]
+                       /\ channels' = ch0
+                       /\ UNCHANGED << host, sent, delivered,
+                                       nextGiftId, nextRefId >>
+                       /\ Mark([name |-> "ReceiveNetwork",
+                                kind |-> "deposit-gift",
+                                from |-> from,
+                                to |-> to,
+                                giftId |-> gid,
+                                recipient |-> rcp,
+                                targetLocalRefId |-> tlr,
+                                pw |-> pw])
+              \/ \* op:withdraw-gift (Phase 3, target host).  Two outcomes:
+                 \*   (1) entry present and recipient matches: resolve the
+                 \*       pre-minted LocalPromise(pw) to T_local, send
+                 \*       op:resolve(pw, desc:remote-target), clear the gift.
+                 \*   (2) entry present but recipient mismatch: silently drop
+                 \*       (wrong-recipient rejection; gift stays intact for
+                 \*       the legitimate recipient).
+                 \* If the entry is NOT yet present (the deposit hasn't been
+                 \* processed at this target host yet because deposit and
+                 \* withdraw arrive on different channels), the action is
+                 \* disabled and the message stays at the head of the queue;
+                 \* this is the natural serialization point the plan calls
+                 \* out, and prevents a withdraw from being lost when it
+                 \* races the deposit.
+                 /\ msg.op = "op:withdraw-gift"
+                 /\ EnableHandoff
+                 /\ LET gid == msg.giftId
+                        gifter == msg.gifter
+                        pw == msg.withdrawPromiseRefId
+                        entry == gifts[to][gifter][gid]
+                        depositSeen == entry # NoGift
+                        recipientOK ==
+                            /\ depositSeen
+                            /\ entry.recipient = from
+                        tlr == IF recipientOK THEN entry.targetLocalRefId ELSE 0
+                        resVal == DescRemoteTarget(to, tlr)
+                    IN
+                       /\ depositSeen
+                       /\ (CASE recipientOK
+                                -> \* All steps fused atomically so the
+                                   \* PairingInvariant is satisfied at the
+                                   \* state boundary.  The LocalPromise(pw)
+                                   \* was pre-minted on deposit; we now only
+                                   \* install its resolution.
+                                   /\ refs[to][tlr].kind = "LocalTarget"
+                                   /\ refs[to][pw].kind = "LocalPromise"
+                                   /\ refs' =
+                                        [refs EXCEPT
+                                            ![to][pw].resolution =
+                                                ResRef(to, tlr),
+                                            ![to][pw].notified = TRUE]
+                                   /\ channels' =
+                                        NetworkAppend(ch0, to, from,
+                                            OpResolve(pw, resVal))
+                                   /\ gifts' =
+                                        [gifts EXCEPT ![to][gifter][gid] = NoGift]
+                            [] OTHER
+                                -> \* Wrong-recipient: silent drop, gift
+                                   \* entry preserved for the legitimate
+                                   \* recipient (GiftHasOneRecipient).
+                                   /\ channels' = ch0
+                                   /\ UNCHANGED << refs, gifts >>)
+                       /\ UNCHANGED << host, sent, delivered,
+                                       nextGiftId, nextRefId >>
+                       /\ Mark([name |-> "ReceiveNetwork",
+                                kind |-> "withdraw-gift",
+                                from |-> from,
+                                to |-> to,
+                                giftId |-> gid,
+                                gifter |-> gifter,
+                                pw |-> pw,
+                                accepted |-> recipientOK])
 
 ----------------------------------------------------------------------------
-ProcessPending ==
-    \E q \in Peers, pr \in PromiseRefs :
-        /\ Len(pending[q][pr]) > 0
-        /\ resolved[pr]
-        /\ LET m == Head(pending[q][pr])
-               nextPos == pr + 1
-               m2 == [m EXCEPT !.pos = nextPos]
+(* SendFlushAck: at L holding an embargoed RemotePromise, send op:flush-ack
+   once channels[L][resolverPeer] is drained of op:deliver-only.  Guarded
+   by flushPhase = "idle" to ensure one ack per flush round. *)
+
+SendFlushAck ==
+    \E p \in Peers : \E r \in DOMrefs(p) :
+        /\ RoutingPolicy = "OpFlushProtocol"
+        /\ refs[p][r].kind = "RemotePromise"
+        /\ refs[p][r].embargo
+        /\ refs[p][r].flushPhase = "idle"
+        /\ LET resolverPeer == refs[p][r].resolverPeer
            IN
-           /\ m.op = "op:deliver-only"
-           /\ pending' =
-                [pending EXCEPT
-                    ![q] =
-                        [pending[q] EXCEPT ![pr] = Tail(pending[q][pr])]]
-           /\ IF nextPos = TerminalPos
-              THEN IF host[TerminalPos] = q
-                   THEN /\ delivered' =
-                             Append(delivered,
-                                    [sender |-> m.sender,
-                                     ref |-> m.sentOnRef,
-                                     seq |-> m.seq])
-                        /\ UNCHANGED channels
-                   ELSE /\ channels' =
-                             NetworkAppend(channels, q,
-                                 host[TerminalPos], m2)
-                        /\ UNCHANGED delivered
-              ELSE LET hopQ ==
-                           IF host[nextPos] = q THEN HeadPeer ELSE q
-                   IN /\ channels' =
-                           NetworkAppend(channels, hopQ, host[nextPos], m2)
-                   /\ UNCHANGED delivered
-           /\ UNCHANGED << host, resolved, knownByPeer, localQueues, sent,
-                  shortenActive, shortenEntry, headPipelined, headEmbargo,
-                  opFlushPhase >>
-           /\ Mark([name |-> "ProcessPending",
-                    actor |-> q,
-                    promise |-> pr,
-                    seq |-> m.seq,
-                    nextPos |-> pr + 1])
+              /\ ~ChannelHasDeliverOnly(p, resolverPeer)
+              /\ refs' =
+                   [refs EXCEPT ![p][r].flushPhase = "out"]
+              /\ channels' =
+                   NetworkAppend(channels, p, resolverPeer, OpFlushAck(r))
+              /\ UNCHANGED << host, sent, delivered >>
+              /\ HandoffVarsUnchanged
+              /\ Mark([name |-> "SendFlushAck",
+                       actor |-> p,
+                       refId |-> r,
+                       resolver |-> resolverPeer])
+
+----------------------------------------------------------------------------
+(* Listen (Phase 2): peer p holding a RemotePromise sends op:listen to the
+   resolver to dynamically subscribe.  Gated by EnableDynamicListen so we
+   don't pollute the chain-MC state spaces unnecessarily. *)
+
+Listen ==
+    \E p \in Peers : \E r \in DOMrefs(p) :
+        /\ EnableDynamicListen
+        /\ refs[p][r].kind = "RemotePromise"
+        /\ ~refs[p][r].listenSent
+        /\ LET resolverPeer == refs[p][r].resolverPeer
+               resolverR == refs[p][r].resolverRefId
+           IN
+              /\ p # resolverPeer
+              /\ channels' =
+                   NetworkAppend(channels, p, resolverPeer, OpListen(resolverR))
+              /\ refs' =
+                   [refs EXCEPT ![p][r].listenSent = TRUE]
+              /\ UNCHANGED << host, sent, delivered >>
+              /\ HandoffVarsUnchanged
+              /\ Mark([name |-> "Listen",
+                       actor |-> p,
+                       resolver |-> resolverPeer,
+                       refId |-> resolverR])
+
+----------------------------------------------------------------------------
+(* EJavaRelease: at L holding a RemotePromise with embargo set and
+   localResolution staged, lift embargo once channels[L][resolverPeer] is
+   drained of op:deliver-only. *)
+
+EJavaRelease ==
+    \E p \in Peers : \E r \in DOMrefs(p) :
+        /\ RoutingPolicy = "EJavaFlush"
+        /\ refs[p][r].kind = "RemotePromise"
+        /\ refs[p][r].embargo
+        /\ refs[p][r].localResolution # ResNone
+        /\ LET resolverPeer == refs[p][r].resolverPeer
+           IN
+              /\ ~ChannelHasDeliverOnly(p, resolverPeer)
+              /\ refs' =
+                   [refs EXCEPT ![p][r].embargo = FALSE]
+              /\ UNCHANGED << channels, host, sent, delivered >>
+              /\ HandoffVarsUnchanged
+              /\ Mark([name |-> "EJavaRelease",
+                       actor |-> p,
+                       refId |-> r])
+
+----------------------------------------------------------------------------
+(* HandoffInitiate (Phase 3): gifter packages the gifter-side of a 3PHO
+   without a preceding promise resolution.  Modeled as an atomic step that
+   allocates (giftId, pw), appends op:deposit-gift to channels[gifter][
+   targetHost], and appends op:resolve(pw, desc:handoff-give(...)) to
+   channels[gifter][recipient].
+
+   pw is allocated from the global nextRefId counter so it does not collide
+   with chain refs or other handoffs.  The gifter must already hold a
+   RemoteTarget for the target so the deposit's targetLocalRefId is
+   meaningful. *)
+
+(* `existingRefId` selects between:
+     0  -- standalone case (no preceding promise; recipient just gets pw).
+     r  -- chain (forwarder) case (recipient already holds RemotePromise r;
+           the handoff shortens that ref to pw, and once pw resolves the
+           recipient can dispatch r -> pw -> wire to targetHost).  *)
+HandoffInitiate ==
+    \E gifter, recipient \in Peers :
+      \E srcRef \in DOMrefs(gifter) :
+        \E existingRefId \in {0} \cup (DOMrefs(recipient)) :
+            /\ EnableHandoff
+            /\ gifter # recipient
+            /\ refs[gifter][srcRef].kind = "RemoteTarget"
+            /\ LET targetHost == refs[gifter][srcRef].targetPeer
+                   targetLocalRef == refs[gifter][srcRef].targetRefId
+                   gid == nextGiftId[gifter]
+                   pw == nextRefId
+                   targetRefIdToSend ==
+                       IF existingRefId = 0 THEN pw ELSE existingRefId
+               IN
+                  /\ gifter # targetHost
+                  /\ recipient # targetHost
+                  /\ gid \in GiftIds
+                  /\ pw \in RefIds
+                  /\ refs[recipient][pw] = EntryNone
+                  /\ \/ existingRefId = 0
+                     \/ /\ existingRefId \in DOMrefs(recipient)
+                        /\ refs[recipient][existingRefId].kind = "RemotePromise"
+                        /\ refs[recipient][existingRefId].localResolution = ResNone
+                  /\ channels' =
+                       LET ch1 ==
+                               NetworkAppend(channels, gifter, targetHost,
+                                   OpDepositGift(gid, recipient, targetLocalRef, pw))
+                       IN NetworkAppend(ch1, gifter, recipient,
+                              OpResolve(targetRefIdToSend,
+                                  DescHandoffGive(gifter, targetHost, gid, pw)))
+                  /\ nextGiftId' =
+                       [nextGiftId EXCEPT ![gifter] = gid + 1]
+                  /\ nextRefId' = pw + 1
+                  /\ UNCHANGED << host, refs, sent, delivered, gifts >>
+                  /\ Mark([name |-> "HandoffInitiate",
+                           gifter |-> gifter,
+                           recipient |-> recipient,
+                           targetHost |-> targetHost,
+                           existingRefId |-> existingRefId,
+                           giftId |-> gid,
+                           pw |-> pw])
+
+----------------------------------------------------------------------------
+Init == PromiseResolutionInit
 
 ProtocolNextExtra ==
-    \/ Shorten
+    \/ SendFlushAck
     \/ EJavaRelease
+    \/ SendOpResolveAfterFlush
+    \/ ProcessHold
+    \/ Listen
+    \/ HandoffInitiate
 
-----------------------------------------------------------------------------
 BasicNext ==
     \/ PeerSend
-    \/ LocalDeliver
     \/ ResolverResolve
     \/ ReceiveNetwork
     \/ ProcessPending
 
 Next == BasicNext \/ ProtocolNextExtra
 
-Spec == Init /\ [][Next]_vars
+(* Fairness: weak fairness on every action that can move a message toward
+   delivery.  Exposed as a named operator so MCs that override Init can
+   still pick up the same fairness assumptions (via PS!Fairness) without
+   restating them. *)
+Fairness ==
+    /\ WF_vars(PeerSend)
+    /\ WF_vars(ResolverResolve)
+    /\ WF_vars(ReceiveNetwork)
+    /\ WF_vars(ProcessPending)
+    /\ WF_vars(SendFlushAck)
+    /\ WF_vars(EJavaRelease)
+    /\ WF_vars(SendOpResolveAfterFlush)
+    /\ WF_vars(ProcessHold)
+    /\ WF_vars(Listen)
+    /\ WF_vars(HandoffInitiate)
+
+Spec ==
+    /\ Init
+    /\ [][Next]_vars
+    /\ Fairness
 
 ----------------------------------------------------------------------------
 TypeOK ==
-    LET NetT == NetworkChannelsType(Messages)
-    IN
-        /\ ReferencesTypeOK
-        /\ channels \in NetT
-        /\ PeerStateTypeOK(Messages, DeliveredEntry, NumMessages)
-        /\ shortenActive \in BOOLEAN
-        /\ shortenEntry \in 2..ChainLength
-        /\ headPipelined \in BOOLEAN
-        /\ headEmbargo \in BOOLEAN
-        /\ opFlushPhase \in {"idle", "out"}
-        /\ \A from, to \in Peers :
-                \A i \in 1..Len(channels[from][to]) :
-                    channels[from][to][i] \in Messages
+    /\ channels \in NetworkChannelsType(Messages)
+    /\ refs \in [Peers -> [RefIds -> RefEntryType(Messages)]]
+    /\ PeerStateTypeOK(DeliveredEntry, NumMessages, MaxRefId)
+    /\ host \in [ChainRefs -> Peers]
 
 ----------------------------------------------------------------------------
 EndToEndRefFIFO ==
@@ -637,5 +1186,54 @@ EndToEndRefFIFO ==
                 LAMBDA d : d.sender = sender /\ d.ref = ref)
         IN
             \A i \in 1..(Len(seqs) - 1) : seqs[i].seq < seqs[i + 1].seq
+
+----------------------------------------------------------------------------
+(* Completeness invariants. *)
+
+NoInFlightDeliverOnly ==
+    /\ \A p, q \in Peers :
+            \A i \in 1..Len(channels[p][q]) :
+                channels[p][q][i].op # "op:deliver-only"
+    /\ \A p \in Peers : \A r \in DOMrefs(p) :
+            refs[p][r].kind = "LocalPromise" =>
+                Len(refs[p][r].queue) = 0
+    /\ \A p \in Peers : \A r \in DOMrefs(p) :
+            refs[p][r].kind = "RemotePromise" =>
+                Len(refs[p][r].pending) = 0
+
+NoMessageLost ==
+    (sent = NumMessages /\ NoInFlightDeliverOnly)
+        => (Len(delivered) = NumMessages)
+
+EventualDelivery ==
+    <>(Len(delivered) = NumMessages)
+
+----------------------------------------------------------------------------
+(* Phase 3 gift-table invariants.                                           *)
+
+(* GiftOneShot: nextGiftId monotonicity (per-gifter counter strictly
+   increasing on every HandoffInitiate) ensures no (gifter, giftId) pair is
+   re-deposited.  At any state, the depositions that ever occurred at
+   gifts[targetHost][gifter] are confined to giftIds < nextGiftId[gifter],
+   and once cleared (on withdraw) they never become a gift again because
+   no action mutates a gifts[*][*][*] slot besides the deposit (NoGift ->
+   entry) and withdraw (entry -> NoGift) atomic transitions. *)
+
+GiftOneShot ==
+    /\ \A p \in Peers : nextGiftId[p] \in 1..(MaxGifts + 1)
+    /\ \A target, gifter \in Peers : \A gid \in GiftIds :
+         gifts[target][gifter][gid] # NoGift =>
+            gid < nextGiftId[gifter]
+
+(* GiftHasOneRecipient: as long as the gift entry exists, only the named
+   recipient may successfully withdraw it.  The ReceiveOpWithdrawGift
+   handler enforces this at the action level (silently rejecting other
+   peers).  The state invariant here just records that the recipient field
+   is a single Peer. *)
+
+GiftHasOneRecipient ==
+    \A target, gifter \in Peers : \A gid \in GiftIds :
+        LET e == gifts[target][gifter][gid]
+        IN e # NoGift => e.recipient \in Peers
 
 ============================================================================

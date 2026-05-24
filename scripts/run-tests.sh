@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Run every MC model under models/, classify outcomes against expectations,
-# and exit non-zero only when an MC's actual outcome disagrees with its
-# expected one.
+# Run every MC model under models/ and every unit-test MC under tests/,
+# classify outcomes against expectations, and exit non-zero only when an
+# MC's actual outcome disagrees with its expected one.
 #
 # Each MC is declared below as MC|EXPECTED where EXPECTED is one of:
 #   pass      - model checking completes, no invariant violation
 #   violation - model checking finds an invariant violation
 #
+# Debug mode (renders a mermaid trace from the .trace.md file):
 #   ./scripts/run-tests.sh --debug MC_NaivePromiseResolution
 #   ./scripts/run-tests.sh --debug MC_EJavaFlush_4Chain
 #   ./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Chain
@@ -27,7 +28,7 @@ if [[ ! -f "$TLA_JAR" ]]; then
   exit 2
 fi
 
-CP="$TLA_JAR:$ROOT/lib:$ROOT/protocols:$ROOT/spec:$ROOT/models"
+CP="$TLA_JAR:$ROOT/lib:$ROOT/spec:$ROOT/models:$ROOT/tests"
 WORKERS="${WORKERS:-auto}"
 LOG_DIR="$ROOT/.tlc-logs"
 mkdir -p "$LOG_DIR"
@@ -65,44 +66,63 @@ if [[ "${1:-}" == "--debug" ]]; then
   exit 0
 fi
 
-TESTS=(
-  "MC_NaivePromiseResolution|violation"
+# Tests: scenario MCs in models/ (policy-level race scenarios)
+SCENARIO_TESTS=(
   "MC_NoPromiseResolution|pass"
   "MC_NoPromiseResolution_3Chain|pass"
+  "MC_NaivePromiseResolution|violation"
   "MC_ShorteningUnsafe_4Chain|violation"
   "MC_EJavaFlush_4Chain|violation"
-  "MC_EJavaFlushGlobal_4Chain|pass"
   "MC_OpFlushProtocol_4Chain|pass"
+  "MC_SubscribeAfterResolve|pass"
+  "MC_TerminalHandoff_Baseline|pass"
+  "MC_TerminalHandoff_WithForwarder|violation"
+  "MC_ConcurrentHandoffs|pass"
+)
+
+# Tests: unit MCs in tests/ (focused, single-mechanism checks)
+UNIT_TESTS=(
+  "Unit_LocalTarget_Direct|pass"
+  "Unit_LocalShorten_Cascade|pass"
+  "Unit_RemoteTarget_Forward|pass"
+  "Unit_Pipelining_On_Promise|pass"
+  "Unit_Listen_Subscribe_Unresolved|pass"
+  "Unit_Listen_Subscribe_AfterResolve|pass"
+  "Unit_Handoff_DepositWithdraw|pass"
+  "Unit_Handoff_Pipeline|pass"
+  "Unit_Handoff_Pipeline_BeforeDeposit|pass"
+  "Unit_Handoff_RejectWrongRecipient|pass"
+  "Unit_EJavaFlush_RefScopedEmbargo|pass"
 )
 
 FAIL=0
 PASS=0
 UNEXPECTED=0
 
-printf '%-36s  %-10s  %-10s  %s\n' "MODEL" "EXPECTED" "ACTUAL" "DETAIL"
-printf '%-36s  %-10s  %-10s  %s\n' "------------------------------------" "----------" "----------" "-------"
-
-for entry in "${TESTS[@]}"; do
-  module="${entry%%|*}"
-  expected="${entry##*|}"
-  log="$LOG_DIR/${module}.log"
+run_one() {
+  local dir="$1"
+  local entry="$2"
+  local module="${entry%%|*}"
+  local expected="${entry##*|}"
+  local log="$LOG_DIR/${module}.log"
 
   set +e
   java -cp "$CP" tlc2.TLC \
     -workers "$WORKERS" \
-    -config "models/${module}.cfg" \
-    "models/${module}.tla" \
+    -config "${dir}/${module}.cfg" \
+    "${dir}/${module}.tla" \
     >"$log" 2>&1
-  code=$?
+  local code=$?
   set -e
 
+  local actual
   case $code in
     0)   actual="pass" ;;
     12)  actual="violation" ;;
     *)   actual="error(${code})" ;;
   esac
 
-  detail=""
+  local detail=""
   if [[ "$actual" == "violation" ]]; then
     detail="$(grep -m1 -oE 'Invariant [A-Za-z_]+ is violated' "$log" || true)"
   elif [[ "$actual" == "pass" ]]; then
@@ -114,7 +134,7 @@ for entry in "${TESTS[@]}"; do
     detail="see $log"
   fi
 
-  status="OK"
+  local status="OK"
   if [[ "$actual" != "$expected" ]]; then
     status="MISMATCH"
     if [[ "$actual" == error* ]]; then
@@ -130,6 +150,20 @@ for entry in "${TESTS[@]}"; do
     "$module" "$expected" "$actual" \
     "$detail" \
     "$( [[ "$status" == "OK" ]] && echo "" || echo "  <-- $status" )"
+}
+
+printf '\n== Scenario MCs (policy-level race scenarios) ==\n'
+printf '%-36s  %-10s  %-10s  %s\n' "MODEL" "EXPECTED" "ACTUAL" "DETAIL"
+printf '%-36s  %-10s  %-10s  %s\n' "------------------------------------" "----------" "----------" "-------"
+for entry in "${SCENARIO_TESTS[@]}"; do
+  run_one "models" "$entry"
+done
+
+printf '\n== Unit tests (focused, single-mechanism checks) ==\n'
+printf '%-36s  %-10s  %-10s  %s\n' "MODEL" "EXPECTED" "ACTUAL" "DETAIL"
+printf '%-36s  %-10s  %-10s  %s\n' "------------------------------------" "----------" "----------" "-------"
+for entry in "${UNIT_TESTS[@]}"; do
+  run_one "tests" "$entry"
 done
 
 echo

@@ -13,8 +13,8 @@ position 2. The MC pins a readable witness:
 
 Shape of the bug: vatA pipelines op:deliver-only messages on ref 1 toward
 vatB while p1 is unresolved (pending at vatB). vatB resolves p1 and sends
-op:resolve-notify to vatA. After vatA learns the promise is resolved, naive
-routing lets later sends take a shortcut to the terminal (localQueues) while
+op:resolve to vatA. After vatA learns the promise is resolved, naive
+routing lets later sends take a shorten to the terminal (localQueues) while
 an earlier seq is still pending or on the wire, so delivered order for
 (sender=vatA, ref=1) is not strictly increasing.
 

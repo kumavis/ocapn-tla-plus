@@ -1,9 +1,16 @@
 ------------------- MODULE MC_ShorteningUnsafe_4Chain -------------------
 (***************************************************************************)
-(* ChainLength = 4 (three promises + terminal), four distinct peers.       *)
-(* Unsafe promise shortening: Shorten may fire after resolved[1]..[k-1];   *)
-(* then shortcut sends skip intermediaries — breaks EndToEndRefFIFO when   *)
-(* pipelined op:deliver-only still in flight (cf. ocapn/ocapn#11).          *)
+(* ChainLength = 4 (three promises + terminal).  Race actor: host[2]      *)
+(* (the only peer that ever installs a localResolution under terminal-only *)
+(* propagation in this iteration).                                         *)
+(*                                                                         *)
+(* host[3] resolves p_3 -> RemoteTarget(host[4], 4); op:resolve fires to  *)
+(* host[2] which immediately installs (ShorteningUnsafe = no embargo).    *)
+(* Subsequent pipelined sends from host[2] take the shortened path via    *)
+(* channels[host[2]][host[4]] while in-flight pre-resolve forwards still  *)
+(* travel via channels[host[2]][host[3]] -> channels[host[3]][host[4]].   *)
+(*                                                                         *)
+(* Expected: EndToEndRefFIFO_MC violated.                                  *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -11,73 +18,66 @@ EXTENDS TLC, Naturals, Sequences
 Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
 ChainLength == 4
+MaxRefId == ChainLength
 NumMessages == 5
-ExtraOps == {}
+EmptyInitialListeners == FALSE
+EnableDynamicListen == FALSE
+EnableHandoff == FALSE
+MaxGifts == 0
 RoutingPolicy == "ShorteningUnsafe"
 DebugTrace == FALSE
 
 VARIABLES
     channels,
     host,
-    resolved,
-    knownByPeer,
-    localQueues,
-    pending,
+    refs,
     sent,
     delivered,
-    lastAction,
-    shortenActive,
-    shortenEntry,
-    headPipelined,
-    headEmbargo,
-    opFlushPhase
+    gifts,
+    nextGiftId,
+    nextRefId,
+    lastAction
 
-vars ==
-    << channels, host, resolved, knownByPeer,
-       localQueues, pending, sent, delivered, lastAction,
-       shortenActive, shortenEntry, headPipelined, headEmbargo, opFlushPhase >>
+vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
 PS ==
     INSTANCE PromiseResolution WITH
         Peers <- Peers,
         HeadPeer <- HeadPeer,
         ChainLength <- ChainLength,
+        MaxRefId <- MaxRefId,
         NumMessages <- NumMessages,
-        ExtraOps <- ExtraOps,
         RoutingPolicy <- RoutingPolicy,
+        EmptyInitialListeners <- EmptyInitialListeners,
+        EnableDynamicListen <- EnableDynamicListen,
+        EnableHandoff <- EnableHandoff,
+        MaxGifts <- MaxGifts,
         DebugTrace <- DebugTrace,
         channels <- channels,
         host <- host,
-        resolved <- resolved,
-        knownByPeer <- knownByPeer,
-        localQueues <- localQueues,
-        pending <- pending,
+        refs <- refs,
         sent <- sent,
         delivered <- delivered,
-        lastAction <- lastAction,
-        shortenActive <- shortenActive,
-        shortenEntry <- shortenEntry,
-        headPipelined <- headPipelined,
-        headEmbargo <- headEmbargo,
-        opFlushPhase <- opFlushPhase
+        gifts <- gifts,
+        nextGiftId <- nextGiftId,
+        nextRefId <- nextRefId,
+        lastAction <- lastAction
 
 Init ==
     /\ PS!Init
     /\ host = <<"vatB", "vatC", "vatD", "vatE">>
 
-Next ==
-    \/ PS!PeerSend
-    \/ PS!LocalDeliver
-    \/ PS!ResolverResolve
-    \/ PS!ReceiveNetwork
-    \/ PS!ProcessPending
-    \/ PS!Shorten
-    \/ PS!EJavaRelease
+Next == PS!Next
 
-Spec == Init /\ [][Next]_vars
+Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
 TypeOK_MC == PS!TypeOK
 
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
+
+PairingInvariant_MC == PS!PairingInvariant
+
+NoMessageLost_MC == PS!NoMessageLost
+EventualDelivery_MC == PS!EventualDelivery
 
 ============================================================================

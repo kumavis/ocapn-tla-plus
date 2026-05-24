@@ -1,8 +1,20 @@
------------------------- MODULE MC_NoPromiseResolution ------------------------
+------------------------- MODULE Unit_Listen_Subscribe_Unresolved -------------------------
 (***************************************************************************)
-(* NoPromiseResolution: listeners = {} so no op:resolve ever fires; every  *)
-(* ref-1 send rides the wire through the chain.  ChainLength = 2; host    *)
-(* existentially chosen at Init.  Expected: EndToEndRefFIFO_MC holds.     *)
+(* Phase 2 unit test: op:listen arrives at the resolver BEFORE the promise *)
+(* has been resolved.                                                      *)
+(*                                                                         *)
+(*   Peers     = {vatA, vatB}                                              *)
+(*   host      = <<vatA, vatA>>     (LocalPromise p_1 AND LocalTarget T    *)
+(*                                   both hosted at vatA)                  *)
+(*   HeadPeer  = vatA                                                      *)
+(*                                                                         *)
+(* Expected behavior:                                                      *)
+(*   - vatB Listens -> vatA receives op:listen while LocalPromise[1] is    *)
+(*     still unresolved.                                                   *)
+(*   - vatA adds vatB to listeners; no immediate op:resolve reply.         *)
+(*   - vatA later ResolverResolves; with vatB in listeners, op:resolve     *)
+(*     fires (NaivePromiseResolution path).                                *)
+(*   - vatB receives op:resolve, installs localResolution.                 *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -11,12 +23,12 @@ Peers == {"vatA", "vatB"}
 HeadPeer == "vatA"
 ChainLength == 2
 MaxRefId == ChainLength
-NumMessages == 3
-EmptyInitialListeners == FALSE
-EnableDynamicListen == FALSE
+NumMessages == 1
+EmptyInitialListeners == TRUE
+EnableDynamicListen == TRUE
 EnableHandoff == FALSE
 MaxGifts == 0
-RoutingPolicy == "NoPromiseResolution"
+RoutingPolicy == "NaivePromiseResolution"
 DebugTrace == FALSE
 
 VARIABLES
@@ -55,20 +67,17 @@ PS ==
         nextRefId <- nextRefId,
         lastAction <- lastAction
 
-Init == PS!Init
+Init ==
+    /\ PS!Init
+    /\ host = <<"vatA", "vatA">>
 
 Next == PS!Next
 
 Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
 TypeOK_MC == PS!TypeOK
-
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
-
 PairingInvariant_MC == PS!PairingInvariant
-
 NoMessageLost_MC == PS!NoMessageLost
-
 EventualDelivery_MC == PS!EventualDelivery
-
 ============================================================================

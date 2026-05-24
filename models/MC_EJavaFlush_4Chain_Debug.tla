@@ -1,6 +1,6 @@
 ------------------ MODULE MC_EJavaFlush_4Chain_Debug ------------------
 (***************************************************************************)
-(* Same as MC_EJavaFlush_4Chain (canonical / local) with DebugTrace TRUE.   *)
+(* Same as MC_EJavaFlush_4Chain with DebugTrace TRUE.                      *)
 (* Used by run-tests.sh --debug to render a mermaid trace of the violation.*)
 (***************************************************************************)
 
@@ -9,73 +9,65 @@ EXTENDS TLC, Naturals, Sequences
 Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
 ChainLength == 4
+MaxRefId == ChainLength
 NumMessages == 3
-ExtraOps == {}
+EmptyInitialListeners == FALSE
+EnableDynamicListen == FALSE
+EnableHandoff == FALSE
+MaxGifts == 0
 RoutingPolicy == "EJavaFlush"
 DebugTrace == TRUE
 
 VARIABLES
     channels,
     host,
-    resolved,
-    knownByPeer,
-    localQueues,
-    pending,
+    refs,
     sent,
     delivered,
-    lastAction,
-    shortenActive,
-    shortenEntry,
-    headPipelined,
-    headEmbargo,
-    opFlushPhase
+    gifts,
+    nextGiftId,
+    nextRefId,
+    lastAction
 
-vars ==
-    << channels, host, resolved, knownByPeer,
-       localQueues, pending, sent, delivered, lastAction,
-       shortenActive, shortenEntry, headPipelined, headEmbargo, opFlushPhase >>
+vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
 PS ==
     INSTANCE PromiseResolution WITH
         Peers <- Peers,
         HeadPeer <- HeadPeer,
         ChainLength <- ChainLength,
+        MaxRefId <- MaxRefId,
         NumMessages <- NumMessages,
-        ExtraOps <- ExtraOps,
         RoutingPolicy <- RoutingPolicy,
+        EmptyInitialListeners <- EmptyInitialListeners,
+        EnableDynamicListen <- EnableDynamicListen,
+        EnableHandoff <- EnableHandoff,
+        MaxGifts <- MaxGifts,
         DebugTrace <- DebugTrace,
         channels <- channels,
         host <- host,
-        resolved <- resolved,
-        knownByPeer <- knownByPeer,
-        localQueues <- localQueues,
-        pending <- pending,
+        refs <- refs,
         sent <- sent,
         delivered <- delivered,
-        lastAction <- lastAction,
-        shortenActive <- shortenActive,
-        shortenEntry <- shortenEntry,
-        headPipelined <- headPipelined,
-        headEmbargo <- headEmbargo,
-        opFlushPhase <- opFlushPhase
+        gifts <- gifts,
+        nextGiftId <- nextGiftId,
+        nextRefId <- nextRefId,
+        lastAction <- lastAction
 
 Init ==
     /\ PS!Init
     /\ host = <<"vatB", "vatC", "vatD", "vatE">>
 
-Next ==
-    \/ PS!PeerSend
-    \/ PS!LocalDeliver
-    \/ PS!ResolverResolve
-    \/ PS!ReceiveNetwork
-    \/ PS!ProcessPending
-    \/ PS!Shorten
-    \/ PS!EJavaRelease
+Next == PS!Next
 
 Spec == Init /\ [][Next]_vars
 
 TypeOK_MC == PS!TypeOK
 
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
+
+PairingInvariant_MC == PS!PairingInvariant
+
+NoMessageLost_MC == PS!NoMessageLost
 
 ============================================================================

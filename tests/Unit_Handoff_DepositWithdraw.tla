@@ -1,0 +1,107 @@
+------------------------ MODULE Unit_Handoff_DepositWithdraw ------------------------
+(***************************************************************************)
+(* Unit: minimal opaque 3PHO round-trip.                                  *)
+(*                                                                         *)
+(* Topology:                                                               *)
+(*   vatA = gifter (holds RemoteTarget to vatC[2])                        *)
+(*   vatB = recipient                                                      *)
+(*   vatC = target host (LocalTarget at refId 2)                          *)
+(*                                                                         *)
+(* HandoffInitiate fires once, then the three wire messages (deposit-     *)
+(* gift, op:resolve(desc:handoff-give), withdraw-gift) get processed in   *)
+(* any FIFO-respecting order.  At quiescence:                              *)
+(*   - gifts[vatC][vatA][1] is cleared (NoGift)                           *)
+(*   - refs[vatC][3] is LocalPromise resolved to ResRef(vatC, 2)          *)
+(*   - refs[vatB][3] is RemotePromise(vatC, 3) with localResolution =     *)
+(*     ResRef(vatC, 2)                                                    *)
+(*                                                                         *)
+(* PairingInvariant, GiftOneShot, GiftHasOneRecipient hold throughout.    *)
+(***************************************************************************)
+
+EXTENDS TLC, Naturals, Sequences
+
+Peers == {"vatA", "vatB", "vatC"}
+HeadPeer == "vatA"
+ChainLength == 2
+MaxGifts == 1
+MaxRefId == ChainLength + MaxGifts
+NumMessages == 1
+EmptyInitialListeners == TRUE
+EnableDynamicListen == FALSE
+EnableHandoff == TRUE
+RoutingPolicy == "NoPromiseResolution"
+DebugTrace == FALSE
+
+VARIABLES
+    channels,
+    host,
+    refs,
+    sent,
+    delivered,
+    gifts,
+    nextGiftId,
+    nextRefId,
+    lastAction
+
+vars == << channels, host, refs, sent, delivered,
+           gifts, nextGiftId, nextRefId, lastAction >>
+
+PS ==
+    INSTANCE PromiseResolution WITH
+        Peers <- Peers,
+        HeadPeer <- HeadPeer,
+        ChainLength <- ChainLength,
+        MaxRefId <- MaxRefId,
+        MaxGifts <- MaxGifts,
+        NumMessages <- NumMessages,
+        RoutingPolicy <- RoutingPolicy,
+        EmptyInitialListeners <- EmptyInitialListeners,
+        EnableDynamicListen <- EnableDynamicListen,
+        EnableHandoff <- EnableHandoff,
+        DebugTrace <- DebugTrace,
+        channels <- channels,
+        host <- host,
+        refs <- refs,
+        sent <- sent,
+        delivered <- delivered,
+        gifts <- gifts,
+        nextGiftId <- nextGiftId,
+        nextRefId <- nextRefId,
+        lastAction <- lastAction
+
+Init ==
+    /\ host = <<"vatA", "vatC">>
+    /\ refs = [p \in Peers |->
+                 [r \in (1..MaxRefId) |->
+                    CASE p = "vatA" /\ r = 1 ->
+                            PS!MkLocalPromise(<< >>, {},
+                                PS!ResNone, {}, FALSE)
+                      [] p = "vatA" /\ r = 2 ->
+                            PS!MkRemoteTarget("vatC", 2)
+                      [] p = "vatB" /\ r = 1 ->
+                            PS!MkRemotePromise("vatA", 1, PS!ResNone,
+                                FALSE, "idle", << >>, TRUE)
+                      [] p = "vatC" /\ r = 2 ->
+                            PS!MkLocalTarget
+                      [] OTHER -> PS!EntryNone]]
+    /\ channels = [p \in Peers |-> [q \in Peers |-> << >>]]
+    /\ sent = 0
+    /\ delivered = << >>
+    /\ gifts = [p \in Peers |-> [q \in Peers |-> [i \in 1..MaxGifts |->
+                  PS!NoGift]]]
+    /\ nextGiftId = [p \in Peers |-> 1]
+    /\ nextRefId = ChainLength + 1
+    /\ lastAction = [name |-> "init"]
+
+Next == PS!Next
+
+Spec == Init /\ [][Next]_vars /\ PS!Fairness
+
+TypeOK_MC == PS!TypeOK
+EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
+PairingInvariant_MC == PS!PairingInvariant
+NoMessageLost_MC == PS!NoMessageLost
+EventualDelivery_MC == PS!EventualDelivery
+GiftOneShot_MC == PS!GiftOneShot
+GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
+============================================================================

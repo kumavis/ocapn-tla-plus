@@ -1,0 +1,125 @@
+------------------------ MODULE Unit_Handoff_RejectWrongRecipient ------------------------
+(***************************************************************************)
+(* Unit: a peer that is NOT the named recipient must not be able to       *)
+(* withdraw a gift.                                                        *)
+(*                                                                         *)
+(* Adversarial Init:                                                       *)
+(*   - gifts[vatC][vatA][1] = (recipient = vatB, targetLocalRefId = 2)    *)
+(*   - channels[vatX][vatC] = << op:withdraw-gift(1, vatA, 3) >>          *)
+(*     where vatX = "vatD" is NOT the named recipient                     *)
+(*                                                                         *)
+(* Expected: vatC silently rejects the withdraw (channel drained, no new  *)
+(* LocalPromise at refs[vatC][3], gift entry unchanged).  When vatB later *)
+(* sends a legitimate withdraw, vatC accepts it.  GiftHasOneRecipient and *)
+(* GiftOneShot hold throughout.                                            *)
+(***************************************************************************)
+
+EXTENDS TLC, Naturals, Sequences
+
+Peers == {"vatA", "vatB", "vatC", "vatD"}
+HeadPeer == "vatA"
+ChainLength == 2
+MaxGifts == 1
+MaxRefId == ChainLength + MaxGifts
+NumMessages == 1
+EmptyInitialListeners == TRUE
+EnableDynamicListen == FALSE
+EnableHandoff == TRUE
+RoutingPolicy == "NoPromiseResolution"
+DebugTrace == FALSE
+
+VARIABLES
+    channels,
+    host,
+    refs,
+    sent,
+    delivered,
+    gifts,
+    nextGiftId,
+    nextRefId,
+    lastAction
+
+vars == << channels, host, refs, sent, delivered,
+           gifts, nextGiftId, nextRefId, lastAction >>
+
+PS ==
+    INSTANCE PromiseResolution WITH
+        Peers <- Peers,
+        HeadPeer <- HeadPeer,
+        ChainLength <- ChainLength,
+        MaxRefId <- MaxRefId,
+        MaxGifts <- MaxGifts,
+        NumMessages <- NumMessages,
+        RoutingPolicy <- RoutingPolicy,
+        EmptyInitialListeners <- EmptyInitialListeners,
+        EnableDynamicListen <- EnableDynamicListen,
+        EnableHandoff <- EnableHandoff,
+        DebugTrace <- DebugTrace,
+        channels <- channels,
+        host <- host,
+        refs <- refs,
+        sent <- sent,
+        delivered <- delivered,
+        gifts <- gifts,
+        nextGiftId <- nextGiftId,
+        nextRefId <- nextRefId,
+        lastAction <- lastAction
+
+Init ==
+    /\ host = <<"vatA", "vatC">>
+    /\ refs = [p \in Peers |->
+                 [r \in (1..MaxRefId) |->
+                    CASE p = "vatA" /\ r = 1 ->
+                            PS!MkLocalPromise(<< >>, {},
+                                PS!ResNone, {}, FALSE)
+                      [] p = "vatA" /\ r = 2 ->
+                            PS!MkRemoteTarget("vatC", 2)
+                      [] p = "vatB" /\ r = 3 ->
+                            PS!MkRemotePromise("vatC", 3, PS!ResNone,
+                                FALSE, "idle", << >>, TRUE)
+                      [] p = "vatC" /\ r = 2 ->
+                            PS!MkLocalTarget
+                      [] p = "vatC" /\ r = 3 ->
+                            PS!MkLocalPromise(<< >>, {"vatB"},
+                                PS!ResNone, {}, FALSE)
+                      [] OTHER -> PS!EntryNone]]
+    /\ channels =
+         [p \in Peers |->
+            [q \in Peers |->
+               CASE p = "vatD" /\ q = "vatC" ->
+                       << PS!OpWithdrawGift(1, "vatA", 3) >>
+                 [] p = "vatB" /\ q = "vatC" ->
+                       << PS!OpWithdrawGift(1, "vatA", 3) >>
+                 [] OTHER -> << >>]]
+    /\ sent = 0
+    /\ delivered = << >>
+    /\ gifts = [p \in Peers |->
+                  [q \in Peers |->
+                     [i \in 1..MaxGifts |->
+                        IF p = "vatC" /\ q = "vatA" /\ i = 1
+                        THEN [kind |-> "gift",
+                              recipient |-> "vatB",
+                              targetLocalRefId |-> 2]
+                        ELSE PS!NoGift]]]
+    /\ nextGiftId = [p \in Peers |-> IF p = "vatA" THEN 2 ELSE 1]
+    /\ nextRefId = ChainLength + 1 + 1
+    /\ lastAction = [name |-> "init"]
+
+Next == PS!Next
+
+Spec == Init /\ [][Next]_vars /\ PS!Fairness
+
+TypeOK_MC == PS!TypeOK
+EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
+PairingInvariant_MC == PS!PairingInvariant
+NoMessageLost_MC == PS!NoMessageLost
+GiftOneShot_MC == PS!GiftOneShot
+GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
+
+\* Behavioral check: at quiescence, gift slot is cleared (the legitimate
+\* withdraw from vatB succeeded) and the wrong-recipient withdraw never
+\* did damage.
+GiftEventuallyCleared ==
+    [] (   (\A p, q \in Peers : Len(channels[p][q]) = 0)
+        => gifts["vatC"]["vatA"][1] = PS!NoGift )
+============================================================================

@@ -1,17 +1,20 @@
------------------------- MODULE MC_NoPromiseResolution ------------------------
+------------------------ MODULE Unit_LocalShorten_Cascade ------------------------
 (***************************************************************************)
-(* NoPromiseResolution: listeners = {} so no op:resolve ever fires; every  *)
-(* ref-1 send rides the wire through the chain.  ChainLength = 2; host    *)
-(* existentially chosen at Init.  Expected: EndToEndRefFIFO_MC holds.     *)
+(* Pinned topology: HeadPeer = vatA hosts BOTH LocalPromises (refIds 1, 2) *)
+(* and vatB hosts the terminal LocalTarget at refId 3.                     *)
+(*                                                                         *)
+(* When LocalPromise[1] resolves to LocalPromise[2] (same peer), the spec  *)
+(* must intra-vat-spill its queue into LocalPromise[2].queue (local        *)
+(* shortening, no wire traffic), then drain when [2] resolves.             *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
 Peers == {"vatA", "vatB"}
 HeadPeer == "vatA"
-ChainLength == 2
+ChainLength == 3
 MaxRefId == ChainLength
-NumMessages == 3
+NumMessages == 2
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == FALSE
@@ -55,20 +58,17 @@ PS ==
         nextRefId <- nextRefId,
         lastAction <- lastAction
 
-Init == PS!Init
+Init ==
+    /\ PS!Init
+    /\ host = <<"vatA", "vatA", "vatB">>
 
 Next == PS!Next
 
 Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
 TypeOK_MC == PS!TypeOK
-
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
-
 PairingInvariant_MC == PS!PairingInvariant
-
 NoMessageLost_MC == PS!NoMessageLost
-
 EventualDelivery_MC == PS!EventualDelivery
-
 ============================================================================

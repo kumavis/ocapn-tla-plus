@@ -1,11 +1,14 @@
 ---------------------- MODULE MC_EJavaFlush_4Chain ----------------------
 (***************************************************************************)
-(* Same topology as MC_ShorteningUnsafe_4Chain.                             *)
-(* CANONICAL EJavaFlush (DelayedRedirector): embargo lifts on a LOCAL       *)
-(* signal — host[1] reports its ref-1 queue drained.  Expected:             *)
-(* EndToEndRefFIFO_MC is VIOLATED when shortenEntry > 2, because the local *)
-(* signal does not account for messages still in flight on                 *)
-(* channels[host[1]][host[2]] (and further downstream).                    *)
+(* CANONICAL EJavaFlush on a 4-chain.  On op:resolve at host[2], if       *)
+(* refs[host[2]][3] is pipelined (i.e., host[2] has in-flight ref-1 sends),*)
+(* embargo + remember value; wait for channels[host[2]][host[3]] drain,   *)
+(* then install + lift.                                                   *)
+(*                                                                         *)
+(* Expected: EndToEndRefFIFO_MC VIOLATED.  The local signal is blind to   *)
+(* messages already forwarded past host[3] (now on                        *)
+(* channels[host[3]][host[4]] or queued at host[3]'s LocalPromise).  The  *)
+(* post-embargo direct path channels[host[2]][host[4]] races them.       *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -13,73 +16,66 @@ EXTENDS TLC, Naturals, Sequences
 Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
 ChainLength == 4
+MaxRefId == ChainLength
 NumMessages == 3
-ExtraOps == {}
+EmptyInitialListeners == FALSE
+EnableDynamicListen == FALSE
+EnableHandoff == FALSE
+MaxGifts == 0
 RoutingPolicy == "EJavaFlush"
 DebugTrace == FALSE
 
 VARIABLES
     channels,
     host,
-    resolved,
-    knownByPeer,
-    localQueues,
-    pending,
+    refs,
     sent,
     delivered,
-    lastAction,
-    shortenActive,
-    shortenEntry,
-    headPipelined,
-    headEmbargo,
-    opFlushPhase
+    gifts,
+    nextGiftId,
+    nextRefId,
+    lastAction
 
-vars ==
-    << channels, host, resolved, knownByPeer,
-       localQueues, pending, sent, delivered, lastAction,
-       shortenActive, shortenEntry, headPipelined, headEmbargo, opFlushPhase >>
+vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
 PS ==
     INSTANCE PromiseResolution WITH
         Peers <- Peers,
         HeadPeer <- HeadPeer,
         ChainLength <- ChainLength,
+        MaxRefId <- MaxRefId,
         NumMessages <- NumMessages,
-        ExtraOps <- ExtraOps,
         RoutingPolicy <- RoutingPolicy,
+        EmptyInitialListeners <- EmptyInitialListeners,
+        EnableDynamicListen <- EnableDynamicListen,
+        EnableHandoff <- EnableHandoff,
+        MaxGifts <- MaxGifts,
         DebugTrace <- DebugTrace,
         channels <- channels,
         host <- host,
-        resolved <- resolved,
-        knownByPeer <- knownByPeer,
-        localQueues <- localQueues,
-        pending <- pending,
+        refs <- refs,
         sent <- sent,
         delivered <- delivered,
-        lastAction <- lastAction,
-        shortenActive <- shortenActive,
-        shortenEntry <- shortenEntry,
-        headPipelined <- headPipelined,
-        headEmbargo <- headEmbargo,
-        opFlushPhase <- opFlushPhase
+        gifts <- gifts,
+        nextGiftId <- nextGiftId,
+        nextRefId <- nextRefId,
+        lastAction <- lastAction
 
 Init ==
     /\ PS!Init
     /\ host = <<"vatB", "vatC", "vatD", "vatE">>
 
-Next ==
-    \/ PS!PeerSend
-    \/ PS!LocalDeliver
-    \/ PS!ResolverResolve
-    \/ PS!ReceiveNetwork
-    \/ PS!ProcessPending
-    \/ PS!Shorten
-    \/ PS!EJavaRelease
+Next == PS!Next
 
-Spec == Init /\ [][Next]_vars
+Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
 TypeOK_MC == PS!TypeOK
 
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
+
+PairingInvariant_MC == PS!PairingInvariant
+
+NoMessageLost_MC == PS!NoMessageLost
+EventualDelivery_MC == PS!EventualDelivery
 
 ============================================================================

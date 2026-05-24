@@ -1,8 +1,8 @@
------------------------- MODULE MC_NoPromiseResolution ------------------------
+------------------------ MODULE Unit_RemoteTarget_Forward ------------------------
 (***************************************************************************)
-(* NoPromiseResolution: listeners = {} so no op:resolve ever fires; every  *)
-(* ref-1 send rides the wire through the chain.  ChainLength = 2; host    *)
-(* existentially chosen at Init.  Expected: EndToEndRefFIFO_MC holds.     *)
+(* Pinned topology: HeadPeer = vatA hosts the LocalPromise at refId 1,    *)
+(* vatB hosts the terminal LocalTarget at refId 2.  After ResolverResolve *)
+(* on vatA, drain via Route -> RemoteTarget -> wire to vatB.              *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -11,7 +11,7 @@ Peers == {"vatA", "vatB"}
 HeadPeer == "vatA"
 ChainLength == 2
 MaxRefId == ChainLength
-NumMessages == 3
+NumMessages == 2
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == FALSE
@@ -55,20 +55,17 @@ PS ==
         nextRefId <- nextRefId,
         lastAction <- lastAction
 
-Init == PS!Init
+Init ==
+    /\ PS!Init
+    /\ host = <<"vatA", "vatB">>
 
 Next == PS!Next
 
 Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
 TypeOK_MC == PS!TypeOK
-
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
-
 PairingInvariant_MC == PS!PairingInvariant
-
 NoMessageLost_MC == PS!NoMessageLost
-
 EventualDelivery_MC == PS!EventualDelivery
-
 ============================================================================

@@ -1,80 +1,72 @@
------------------- MODULE MC_NoPromiseResolution_3Chain ------------------
+--------------------- MODULE MC_NoPromiseResolution_3Chain ---------------------
 (***************************************************************************)
-(* Three-position chain (two promises + terminal) on two peers.            *)
-(* NumMessages = 2 to keep exploration tractable.                         *)
-(* Expected: TypeOK_MC and EndToEndRefFIFO_MC hold.                         *)
+(* ChainLength = 3 (two promises + terminal), NoPromiseResolution policy. *)
+(* host existentially chosen at Init.  Expected: holds.                   *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
-Peers == {"vatA", "vatB"}
+Peers == {"vatA", "vatB", "vatC"}
 HeadPeer == "vatA"
 ChainLength == 3
+MaxRefId == ChainLength
 NumMessages == 2
-ExtraOps == {}
+EmptyInitialListeners == FALSE
+EnableDynamicListen == FALSE
+EnableHandoff == FALSE
+MaxGifts == 0
 RoutingPolicy == "NoPromiseResolution"
 DebugTrace == FALSE
 
 VARIABLES
     channels,
     host,
-    resolved,
-    knownByPeer,
-    localQueues,
-    pending,
+    refs,
     sent,
     delivered,
-    lastAction,
-    shortenActive,
-    shortenEntry,
-    headPipelined,
-    headEmbargo,
-    opFlushPhase
+    gifts,
+    nextGiftId,
+    nextRefId,
+    lastAction
 
-vars ==
-    << channels, host, resolved, knownByPeer,
-       localQueues, pending, sent, delivered, lastAction,
-       shortenActive, shortenEntry, headPipelined, headEmbargo, opFlushPhase >>
+vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
 PS ==
     INSTANCE PromiseResolution WITH
         Peers <- Peers,
         HeadPeer <- HeadPeer,
         ChainLength <- ChainLength,
+        MaxRefId <- MaxRefId,
         NumMessages <- NumMessages,
-        ExtraOps <- ExtraOps,
         RoutingPolicy <- RoutingPolicy,
+        EmptyInitialListeners <- EmptyInitialListeners,
+        EnableDynamicListen <- EnableDynamicListen,
+        EnableHandoff <- EnableHandoff,
+        MaxGifts <- MaxGifts,
         DebugTrace <- DebugTrace,
         channels <- channels,
         host <- host,
-        resolved <- resolved,
-        knownByPeer <- knownByPeer,
-        localQueues <- localQueues,
-        pending <- pending,
+        refs <- refs,
         sent <- sent,
         delivered <- delivered,
-        lastAction <- lastAction,
-        shortenActive <- shortenActive,
-        shortenEntry <- shortenEntry,
-        headPipelined <- headPipelined,
-        headEmbargo <- headEmbargo,
-        opFlushPhase <- opFlushPhase
+        gifts <- gifts,
+        nextGiftId <- nextGiftId,
+        nextRefId <- nextRefId,
+        lastAction <- lastAction
 
 Init == PS!Init
 
-Next ==
-    \/ PS!PeerSend
-    \/ PS!LocalDeliver
-    \/ PS!ResolverResolve
-    \/ PS!ReceiveNetwork
-    \/ PS!ProcessPending
-    \/ PS!Shorten
-    \/ PS!EJavaRelease
+Next == PS!Next
 
-Spec == Init /\ [][Next]_vars
+Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
 TypeOK_MC == PS!TypeOK
 
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
+
+PairingInvariant_MC == PS!PairingInvariant
+
+NoMessageLost_MC == PS!NoMessageLost
+EventualDelivery_MC == PS!EventualDelivery
 
 ============================================================================
