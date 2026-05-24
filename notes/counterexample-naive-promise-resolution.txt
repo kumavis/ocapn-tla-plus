@@ -1,0 +1,24 @@
+Counterexample trace from TLC for MC_NaivePromiseResolution
+(NaivePromiseResolution routing on PromiseResolution).
+
+This is a violating run of EndToEndRefFIFO (per sender peer and reference:
+op:deliver-only sequence numbers must increase).
+
+Scenario (one of many TLC finds): promise pr1 is resolved by peer p1 to
+object o1 hosted on p1. A peer sends op:deliver-only on pr1 with seq 1
+along the via-resolver path while pr1 is still unresolved. The resolver
+(p1) emits op:resolve-notify; the sender receives it and learns the
+resolution before seq 1 has been forwarded back. The sender then emits
+seq 2, which naive routing delivers locally to o1. The local delivery
+wins the race against the in-flight seq 1, so the observable log for
+(sender=p1, ref=pr1) becomes <<2, 1>>.
+
+Final state excerpt (invariant violation):
+
+  delivered = << [sender |-> "p1", seq |-> 2, ref |-> "pr1"],
+                  [sender |-> "p1", seq |-> 1, ref |-> "pr1"] >>
+
+Broader "shortening" (e.g. promise-resolves-to-promise) is not modeled here;
+this counterexample is about resolution-to-object and the local fast path.
+
+============================================================================

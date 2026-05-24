@@ -1,61 +1,93 @@
-# TLA+ model: two-party promise resolution + optional shortening
+# TLA+: OCapN promise resolution, pipelining, and `EndToEndRefFIFO`
 
-A small TLA+ specification that models the two-party promise pipelining
-scenario discussed in [`notes/message-ordering.md`](../message-ordering.md)
-and demonstrates, by exhaustive model-checking, that **end-to-end
-reference FIFO falls out of per-pair vat-to-vat FIFO alone — except when
-the protocol admits promise shortening to a local target**, in which
-case the model checker produces a concrete race trace.
+Modular TLA+ specs for **promise resolution** (here: a promise resolves to a
+**remotable object**) plus pipelined **`op:deliver-only`**, with **per-pair
+FIFO** transport between peers.
 
-This spec covers only the simplest "promise resolves to a remotable
-reference on one of the two existing vats" case. It does **not** model
-promise-resolves-to-promise (chain shortening / Tribble 4-way), 3-vat
-introductions, joins, or partition.
+Routing is selected by the **`RoutingPolicy`** constant in
+[`spec/PromiseResolution.tla`](spec/PromiseResolution.tla) (wired from each
+MC module). The values match the protocol-module names:
 
-## The scenario
+- **`"NaivePromiseResolution"`** — after a peer learns a promise's resolution,
+  sends on that **same promise reference** may take a local path to the
+  terminal object when it is co-located with the sender (can break
+  `EndToEndRefFIFO`).
+- **`"NoPromiseResolution"`** — every send on a promise **always** goes via
+  the resolver (`viaResolver`); no post-resolution shortcut. All calls remain
+  pipelined on the original path.
 
-Two vats — Alice and Bob — with per-pair FIFO channels `chanAB` and
-`chanBA`. Alice calls Bob; the answer is a promise P that Bob will
-resolve. Alice pipelines messages on P with monotonically increasing
-sequence numbers. We track the order in which those messages arrive at
-OBJ, the final target of P.
+"Pipelining" here means a sender may emit `op:deliver-only` on a promise
+**before** the promise is resolved. Both policies pipeline; they differ only
+in what happens after resolution.
 
-Two parameters select the scenario:
+**Shortening** in the broader protocol sense (chain shortening when a
+promise resolves to another promise) is **not** modeled yet; it can be a
+separate protocol module later.
 
-| Constant  | Values             | Meaning                                          |
-|-----------|--------------------|--------------------------------------------------|
-| `TARGET`  | `"A"` or `"B"`     | which vat hosts OBJ (the resolution target)      |
-| `SHORTEN` | `TRUE` or `FALSE`  | does Alice take a direct path post-resolution    |
+## Message ordering: `EndToEndRefFIFO`
 
-## Predicted truth table
+The property checked here is **only**:
 
-| `TARGET` | `SHORTEN` | `EndToEndFIFO`             | Why                                                                       |
-|----------|-----------|----------------------------|---------------------------------------------------------------------------|
-| `"A"`    | `FALSE`   | **holds**                  | Every send rides A→B→A; per-channel FIFO orders them at OBJ.              |
-| `"A"`    | `TRUE`    | **violated**               | Post-resolution local sends race past in-flight pipelined predecessors.   |
-| `"B"`    | `FALSE`   | **holds**                  | Every send rides A→B; Bob delivers locally to OBJ in receive order.       |
-| `"B"`    | `TRUE`    | **holds**                  | Shortening to a ref-on-B doesn't change the wire path (still A→B).        |
+> For a **fixed sender peer** and a **fixed reference** `R`, every
+> `op:deliver-only` that peer sends **on `R`** is applied at the terminal
+> value of `R` in **strictly increasing send order** (by the model's
+> per-(peer, `R`) sequence numbers).
 
-The `TARGET = "B"` rows are the analog of the `sameConnection` fast-path
-in E-on-Java's [`DelayedRedirector.run`][delayed-redirector] and of
-Cap'n Proto's "skip-Disembargo-if-same-vat" optimization: when the
-resolution target shares a vat with the resolver, no path switch
-happens, so no synchronization is needed.
+There is **no** claim about:
 
-## Files
+- messages from **different** senders, or
+- **order across different references** — for example sends on a promise
+  and sends on whatever it resolved to are two separate streams; the
+  invariant does not relate them.
 
-| File                                 | Contents                                              |
-|--------------------------------------|-------------------------------------------------------|
-| `PromiseShortening.tla`              | The TLA+ spec (single module, ~9 actions)             |
-| `MC_TargetA_NoShorten.cfg`           | Model config: `TARGET="A"`, `SHORTEN=FALSE`           |
-| `MC_TargetA_Shorten.cfg`             | Model config: `TARGET="A"`, `SHORTEN=TRUE` (race)     |
-| `MC_TargetB_NoShorten.cfg`           | Model config: `TARGET="B"`, `SHORTEN=FALSE`           |
-| `MC_TargetB_Shorten.cfg`             | Model config: `TARGET="B"`, `SHORTEN=TRUE`            |
-| `counterexample-target-a-shorten.txt`| Saved TLC trace of the minimal violating run          |
+Wire messages use OCapN-shaped names (`op:deliver-only`, `op:listen`,
+`op:resolve-notify`). `op:resolve-notify` is a real wire message in this
+model: the resolver appends it to every other peer's channel at the moment
+of resolution. `op:listen` is named but not yet exercised; see *Variant
+ideas* below.
+
+## Layout
+
+```
+ocapn-tla-plus/
+├── lib/                       # Foundation modules (no protocol semantics)
+│   ├── References.tla         # Objects, Promises, topology, resolution chain
+│   ├── Network.tla            # Per-pair FIFO channels
+│   └── PeerState.tla          # localQueues, pending, sent, delivered
+├── protocols/                 # Stateless routing helpers
+│   ├── NaivePromiseResolution.tla
+│   └── NoPromiseResolution.tla
+├── spec/
+│   └── PromiseResolution.tla  # Top-level Init/Next/Spec + EndToEndRefFIFO
+├── models/                    # One MC module + cfg per scenario
+│   ├── MC_NaivePromiseResolution.tla
+│   ├── MC_NaivePromiseResolution.cfg
+│   ├── MC_NoPromiseResolution.tla
+│   └── MC_NoPromiseResolution.cfg
+├── notes/                     # Trace narratives, design notes
+│   └── counterexample-naive-promise-resolution.txt
+└── scripts/
+    └── run-tests.sh           # Runs every MC, classifies outcomes
+```
+
+TLC finds modules by directory + Java classpath; the script wires
+`lib:protocols:spec:models` into `-cp` so every module is reachable.
+
+**Why one MC module per scenario:** TLA+'s `INSTANCE` substitution cannot
+replace a state-dependent operator with an outer definition that closes
+over primed variables. Routing therefore lives in a stateless module
+(`protocols/*`) and is **extended** by `PromiseResolution`, which selects
+between them via the `RoutingPolicy` constant.
+
+**Scenarios:** Topology (`objHost`, `promResolver`) and resolver choices are
+picked existentially in `Init`; TLC enumerates them in one run. Only sizes
+(`NumMessages`, finite `Peers` / `Objects` / `Promises`) are fixed in the MC
+module. `SYMMETRY` is omitted because `objHost` / `promResolver` maps are
+not symmetric under arbitrary peer permutations.
 
 ## How to run
 
-You need `tla2tools.jar` (TLC v2.x). One way:
+You need `tla2tools.jar` (TLC 2.x). One way to get it:
 
 ```bash
 mkdir -p ~/tla
@@ -63,79 +95,107 @@ curl -sSL -o ~/tla/tla2tools.jar \
   https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 ```
 
-Then, from this directory:
+Then, from the repo root:
 
 ```bash
-for cfg in MC_TargetA_NoShorten MC_TargetA_Shorten \
-           MC_TargetB_NoShorten MC_TargetB_Shorten; do
-  echo "=========== $cfg ==========="
-  java -cp ~/tla/tla2tools.jar tlc2.TLC \
-       -workers auto -config "$cfg.cfg" PromiseShortening.tla \
-    | grep -E "Error|Invariant|Model checking completed|states generated"
-  echo
-done
+./scripts/run-tests.sh
 ```
 
-Expected (with `NumMessages = 3`):
+The script runs every model in `models/`, captures TLC's exit code per MC,
+and prints a table:
 
 ```
-=========== MC_TargetA_NoShorten ===========
-Model checking completed. No error has been found.
-133 states generated, 65 distinct states found, 0 states left on queue.
-
-=========== MC_TargetA_Shorten ===========
-Error: Invariant EndToEndFIFO is violated.
-...
-
-=========== MC_TargetB_NoShorten ===========
-Model checking completed. No error has been found.
-103 states generated, 50 distinct states found, 0 states left on queue.
-
-=========== MC_TargetB_Shorten ===========
-Model checking completed. No error has been found.
-103 states generated, 50 distinct states found, 0 states left on queue.
+MODEL                             EXPECTED    ACTUAL      DETAIL
+--------------------------------  ----------  ----------  -------
+MC_NaivePromiseResolution         violation   violation   Invariant EndToEndRefFIFO_MC is violated
+MC_NoPromiseResolution            pass        pass        45132720 distinct / 122400388 generated
 ```
 
-Note that the `MC_TargetB_*` runs explore the same 50 distinct states
-with `SHORTEN = TRUE` as with `SHORTEN = FALSE` — confirming that the
-shortening branch is, by construction, observationally a no-op when the
-resolution target is on Bob.
+It exits non-zero only when an MC's actual outcome disagrees with the
+expected one declared in the script's `TESTS` matrix. Full TLC output for
+each MC is left in `.tlc-logs/<module>.log`. Override TLA jar location with
+`TLA_JAR=/path/to/tla2tools.jar` and worker count with `WORKERS=N`.
 
-## What this does and doesn't prove
+To run a single MC directly:
 
-**What it shows.** Under the modeled assumptions — two vats, per-pair
-FIFO channels, single-sender pipelining, the resolution is to a single
-remotable reference on one of the two existing vats — the only ordering
-hazard for end-to-end reference FIFO is **the protocol decision to
-short-circuit post-resolution sends to a local target**. The same model
-that admits the race in one configuration excludes it in the other three
-by per-channel FIFO alone.
+```bash
+java -cp ~/tla/tla2tools.jar:lib:protocols:spec:models tlc2.TLC \
+     -workers auto \
+     -config models/MC_NoPromiseResolution.cfg \
+     models/MC_NoPromiseResolution.tla
+```
 
-**What it doesn't show.**
+### Run-time expectations (`NumMessages = 3`, two peers, one promise, one object)
 
-- **Cross-sender forks (Tribble 3-vat / WormholeOp scenario).** Not
-  modeled. End-to-end reference FIFO is strictly weaker than full
-  E-Order; this spec only addresses the former.
-- **Chain shortening** (promise-resolves-to-promise, the Tribble 4-way
-  race). Not modeled. The resolution target here is always a remotable
-  reference, never another promise.
-- **Three-party introductions.** Not modeled.
-- **Partition / disconnection.** Not modeled.
-- **The fix.** This spec shows the bug; it does not encode any of
-  `DelayedRedirector`, `Disembargo`/`senderLoopback`, Waterken's `Flush`
-  task, or `op:flush`. Adding any of those would close the
-  `MC_TargetA_Shorten` violation, but is left for a follow-on spec.
+| Model                          | Outcome   | States                              | Time (M2-class) |
+|--------------------------------|-----------|-------------------------------------|------------------|
+| `MC_NaivePromiseResolution`    | violation | ~4k explored before halt            | ~1 s             |
+| `MC_NoPromiseResolution`       | pass      | ~45M distinct (~122M generated)     | ~3–12 min        |
+
+`MC_NaivePromiseResolution` halts at the first invariant violation, so the
+state count is "states until first counterexample," not the full reachable
+set. Don't read it as "the naive variant has a smaller state space than the
+no-promise variant" — to compare fairly, drop `INVARIANT
+EndToEndRefFIFO_MC` from the Naive `.cfg` and re-run.
+
+### Fingerprint-collision estimates
+
+TLC dedupes states by 64-bit hash ("fingerprint"). Two distinct states can
+share a hash, and TLC will silently skip the later one. The two
+probabilities printed at the end of a successful run are upper bounds on
+the chance this happened: a calculated estimate, and one based on actual
+fingerprint distribution. Values around `1e-4` mean roughly 1 in 10,000
+odds the run missed a state. To increase confidence, re-run with `-fp K`
+for a different seed (`0 ≤ K ≤ 63`) and confirm the same result.
+
+## What this does / doesn't prove
+
+**Shows (naive):** `EndToEndRefFIFO` can fail when a sender learns a
+resolution and may deliver locally while earlier `op:deliver-only` messages
+on the **same** promise reference are still in flight on the resolver path.
+
+**Shows (no-promise):** Under the same FIFO and topology model, with **no**
+post-resolution shortcut on promises, **`EndToEndRefFIFO`** holds for the
+checked configuration (`NumMessages = 3`, two peers, one promise, one
+object — the smallest setting that admits the naive failure trace).
+
+**Does not show:** Cross-sender scenarios, chain shortening to another
+promise, partition, or any particular fix — only the hazard surface for the
+stated invariant.
+
+## Variant ideas (not yet implemented)
+
+These are intended as additional `RoutingPolicy` values or as parallel
+hooks; the seam is already in `PromiseResolution.RouteSend` /
+`OnReceiveResolution`.
+
+- **OCapN `op:listen`-based resolution propagation.** Currently the
+  resolver broadcasts `op:resolve-notify` to every other peer at resolution
+  time. In the [CapTP draft][captp], peers explicitly `op:listen` on a
+  promise and the resolver-holder notifies each listener (often via
+  `op:deliver` to the listener's resolver object). Adding this would mean
+  modeling `op:listen` as an action (peer subscribes), tracking
+  subscriptions per `(promise, listener)`, and replacing the broadcast in
+  `ResolverResolve` with per-listener notification.
+
+  Note that `op:deliver` (the request/response variant of `op:deliver-only`)
+  carries an **implicit `op:listen`** via its optional `resolve-me-desc`
+  field: when present, the resolver-holder MUST notify the named resolver
+  on resolution, with no separate `op:listen` round-trip. So a future
+  listen-based model only needs explicit `op:listen` for the case where a
+  peer that previously sent `op:deliver-only` (or `op:deliver` without
+  `resolve-me-desc`) later decides it wants the resolution.
+- **Disembargo / `op:flush` / DelayedRedirector.** Each would add a
+  protocol module with a non-empty `OnReceiveResolution` (fence message
+  sequence) and corresponding `ProtocolNextExtra` actions to drain the
+  pipeline before the path switchover.
+- **Chain shortening** (promise-resolves-to-promise). Requires extending
+  `resolution[pr]` to allow promise targets and revising `TerminalRef` to
+  follow the chain across peers.
+
+[captp]: https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md#promise-and-resolver-objects
 
 ## Pointers
 
-- `notes/message-ordering.md` — full background on the ordering tiers
-  and where each protocol sits
-- `notes/issue-11-promise-shortening.md` — design notes from the OCapN
-  shortening discussion
-- E-on-Java's [`DelayedRedirector`][delayed-redirector] — the
-  implementation-level fix for the violation this spec demonstrates
-- Cap'n Proto's [`Disembargo` comments][capnp-disembargo] in `rpc.capnp`
-  for the equivalent fix there
-
-[delayed-redirector]: https://github.com/kpreid/e-on-java/blob/a0b3b599cf267b3138eea5f5fb83f27cebd28373/src/jsrc/org/erights/e/elib/ref/DelayedRedirector.java
-[capnp-disembargo]: https://github.com/capnproto/capnproto/blob/09a8406f1f26ea7fc49ca72c77987ee28fda0620/c%2B%2B/src/capnp/rpc.capnp#L693-L758
+- E-on-Java `DelayedRedirector`, Cap'n Proto `Disembargo`, Waterken flush,
+  Ridley `op:flush` — candidate follow-on protocol modules
