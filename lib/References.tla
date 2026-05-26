@@ -136,6 +136,29 @@ RefEntryType(Messages) ==
 DOMrefs(p) == {r \in RefIds : refs[p][r] # EntryNone}
 
 ----------------------------------------------------------------------------
+(* Per-actor locality accessors.  Every protocol action in
+   spec/PromiseResolution.tla is required to read its own ref table only;
+   these accessors give a name to the locality-respecting access pattern so
+   a reviewer can grep for direct refs[X][Y] indexing and confirm every
+   such site is either inside an accessor definition here or inside a
+   tightly-scoped EXCEPT update.  See ../notes/locality-contract.md.
+
+   `self` is the bound actor; passing any other peer in this slot is by
+   convention a locality violation and should be justified inline. *)
+
+LocalRefs(self)          == refs[self]
+LocalRef(self, r)        == refs[self][r]
+LocalRefAllocated(self, r) == refs[self][r] # EntryNone
+
+(* EXCEPT-wrappers that thread `self` through the update.  These do not
+   change the underlying semantics (TLA+ requires EXCEPT to be inlined at
+   the call site for field updates), but they give a single place where
+   a reviewer can verify that all in-place writes are scoped to the
+   actor's own slice. *)
+SetLocalRef(refs0, self, r, entry) ==
+    [refs0 EXCEPT ![self][r] = entry]
+
+----------------------------------------------------------------------------
 (* PairingInvariant: every RemoteX has a matching LocalX on its target.  *)
 
 PairingInvariant ==

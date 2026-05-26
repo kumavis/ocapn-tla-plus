@@ -203,6 +203,7 @@ ocapn-tla-plus/
 ├── notes/
 │   ├── path-changes.md                           (terminology + tracked future work)
 │   ├── flush-protocols.md                        (wire-level protocol reference)
+│   ├── locality-contract.md                      (per-variable locality contract + reviewer checklist)
 │   └── counterexample-naive-promise-resolution.txt
 └── scripts/
     ├── run-tests.sh           # matrix + unit tests; --debug renders mermaid
@@ -275,9 +276,12 @@ java -cp ~/tla/tla2tools.jar:lib:spec:models:tests tlc2.TLC \
   reads another peer's channel state.
 
 See [`notes/flush-protocols.md`](notes/flush-protocols.md) for the
-wire-level spec of every mechanism above, and
+wire-level spec of every mechanism above,
 [`notes/path-changes.md`](notes/path-changes.md) for the path-change
-taxonomy and tracked future work.
+taxonomy and tracked future work, and
+[`notes/locality-contract.md`](notes/locality-contract.md) for the
+precise per-variable locality contract every protocol action is
+required to satisfy (and the reviewer checklist for new actions).
 
 ## Fingerprint collisions
 

@@ -4,9 +4,12 @@ This note is the **wire-level protocol reference** for
 [`spec/PromiseResolution.tla`](../spec/PromiseResolution.tla). For the
 path-change taxonomy (promise resolution vs promise shortening) and the
 tracked future-work items that hang off it, see
-[`path-changes.md`](path-changes.md) — that note is the source of
-truth for definitions; this note is the source of truth for the wire
-shapes.
+[`path-changes.md`](path-changes.md). For the precise per-variable
+locality contract every protocol action is required to satisfy — what
+each peer is allowed to read and write — see
+[`locality-contract.md`](locality-contract.md). This note is the
+source of truth for wire shapes; the others are the source of truth
+for definitions and for the implementability contract.
 
 ## Vocabulary
 
