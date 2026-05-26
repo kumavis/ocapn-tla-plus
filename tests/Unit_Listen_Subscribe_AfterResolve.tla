@@ -1,6 +1,6 @@
 ------------------------- MODULE Unit_Listen_Subscribe_AfterResolve -------------------------
 (***************************************************************************)
-(* Phase 2 unit test: a focused single-mechanism counterpart of            *)
+(* op:listen unit test: a focused single-mechanism counterpart of          *)
 (* MC_SubscribeAfterResolve.                                               *)
 (*                                                                         *)
 (* Same topology as the scenario MC but isolated to exercise just the     *)
@@ -34,28 +34,7 @@ VARIABLES
 
 vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        MaxGifts <- MaxGifts,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 (* Force the sequence: vatA's LocalPromise[1] must be resolved BEFORE any
    op:listen is delivered.  We can't directly enforce this in the state

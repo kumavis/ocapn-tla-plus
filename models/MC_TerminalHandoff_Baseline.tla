@@ -1,6 +1,6 @@
 ------------------------- MODULE MC_TerminalHandoff_Baseline -------------------------
 (***************************************************************************)
-(* Phase 3 baseline: a single opaque 3PHO firing in isolation, no race    *)
+(* 3PHO baseline: a single opaque 3PHO firing in isolation, no race      *)
 (* surface from a forwarder.  Validates that the deposit/withdraw         *)
 (* round-trip materializes a properly-paired RemotePromise/LocalPromise   *)
 (* for pw and that messages routed through the new ref reach the target. *)
@@ -56,28 +56,7 @@ VARIABLES
 vars == << channels, host, refs, sent, delivered,
            gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        MaxGifts <- MaxGifts,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ PS!Init

@@ -26,7 +26,8 @@ EnableDynamicListen == FALSE
 EnableHandoff == FALSE
 MaxGifts == 0
 RoutingPolicy == "NaivePromiseResolution"
-DebugTrace == FALSE
+
+CONSTANT DebugTrace  \* set in .cfg: FALSE for normal run, TRUE for _Debug.cfg
 
 VARIABLES
     channels,
@@ -41,28 +42,7 @@ VARIABLES
 
 vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        MaxGifts <- MaxGifts,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ PS!Init
@@ -73,13 +53,14 @@ Next == PS!Next
 
 Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
+\* SpecDebug: same Init/Next but no fairness; used by _Debug.cfg to render
+\* a single counterexample trace without TLC trying to satisfy liveness.
+SpecDebug == Init /\ [][Next]_vars
+
 TypeOK_MC == PS!TypeOK
-
-EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
-
 PairingInvariant_MC == PS!PairingInvariant
-
 NoMessageLost_MC == PS!NoMessageLost
+EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 EventualDelivery_MC == PS!EventualDelivery
 
 ============================================================================

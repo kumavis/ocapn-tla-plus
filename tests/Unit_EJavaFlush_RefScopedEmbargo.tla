@@ -18,19 +18,24 @@
 (*   refs[vatB][1] = LocalPromise(resolution=ResRef(vatC,2), notified=TRUE)*)
 (*   refs[vatC][2] = LocalTarget                                           *)
 (*                                                                         *)
-(* Expected behavior under RoutingPolicy = "EJavaFlush":                   *)
-(*   RefHasPipelinedForwards(vatA, 1) examines channels[vatA][vatB] for    *)
-(*   op:deliver-only with refId=1.  It is empty (the only message there    *)
-(*   is the op:resolve we are about to consume).  Therefore installNow     *)
-(*   fires; embargo is never set on refs[vatA][1].                         *)
+(* Expected behavior under RoutingPolicy = "EJavaFlush" (faithful           *)
+(* DelayedRedirector):                                                     *)
+(*   vatA receives op:resolve(1, desc:remote-target(vatC, 2)).             *)
+(*   refs[vatA][1].fresh = TRUE (vatA has never pipelined through ref 1;   *)
+(*   the unrelated forward on channels[vatA][vatC] went through ref 2,    *)
+(*   which clears refs[vatA][2].fresh -- a per-ref bit -- not              *)
+(*   refs[vatA][1].fresh).  Therefore the fast path fires, embargo stays   *)
+(*   FALSE on refs[vatA][1], and no flush probe is emitted.                *)
 (*                                                                         *)
 (* The old "any HeadPeer-originated op:deliver-only anywhere in vatA's     *)
-(* outbox" heuristic would over-fire on the unrelated forward on           *)
-(* channels[vatA][vatC] and spuriously embargo refs[vatA][1].              *)
+(* outbox" heuristic, and even the intermediate "outbox to immediate       *)
+(* resolver" heuristic, would have over- or under-fired here.  The         *)
+(* per-RemotePromise `fresh` sticky bit is scoped to the specific ref       *)
+(* under resolution and is unaffected by traffic on unrelated refs even    *)
+(* over the same wire.                                                     *)
 (*                                                                         *)
-(* INVARIANT NoSpuriousEmbargo_MC catches the spurious embargo, so this    *)
-(* test passes with the parameterized check and would fail with the old   *)
-(* global heuristic.                                                       *)
+(* INVARIANT NoSpuriousEmbargo_MC catches a spurious embargo on            *)
+(* refs[vatA][1] caused by unrelated traffic.                              *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -61,28 +66,7 @@ VARIABLES
 vars == << channels, host, refs, sent, delivered,
            gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        MaxGifts <- MaxGifts,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ host = <<"vatB", "vatC">>
@@ -90,7 +74,7 @@ Init ==
                  [r \in (1..MaxRefId) |->
                     CASE p = "vatA" /\ r = 1 ->
                             PS!MkRemotePromise("vatB", 1, PS!ResNone,
-                                FALSE, "idle", << >>, TRUE)
+                                FALSE, << >>, TRUE, TRUE)
                       [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                       [] p = "vatB" /\ r = 1 ->
@@ -98,7 +82,7 @@ Init ==
                             \* so ResolverResolve cannot re-fire.  The
                             \* op:resolve below is the in-flight notification.
                             PS!MkLocalPromise(<< >>, {"vatA"},
-                                PS!ResRef("vatC", 2), {}, TRUE)
+                                PS!ResRef("vatC", 2), {}, TRUE, "idle")
                       [] p = "vatB" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                       [] p = "vatC" /\ r = 2 ->

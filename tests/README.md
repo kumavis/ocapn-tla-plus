@@ -7,12 +7,12 @@ dispatch path is taken, then proves the corresponding invariants hold.
 Unit tests intentionally use small `NumMessages` (2) and short chains
 to keep state spaces tiny.
 
-## Phase 1: ref-taxonomy + dispatch
+## Ref taxonomy + dispatch
 
 | MC                              | Pinned topology              | What it exercises                               |
 |---------------------------------|------------------------------|-------------------------------------------------|
 | `Unit_LocalTarget_Direct`       | 1 vat, T at HeadPeer         | LocalPromise.queue + ProcessPending + LocalTarget deliver |
-| `Unit_LocalShorten_Cascade`     | 3 chain, p_1+p_2 at HeadPeer | LocalPromise -> LocalPromise local-shortening (queue spill) |
+| `Unit_LocalShorten_Cascade`     | 3 chain, p_1+p_2 at HeadPeer | intra-vat promise shortening: LocalPromise -> LocalPromise queue cascade (no wire traffic) -- see ../notes/path-changes.md §1.2.a |
 | `Unit_RemoteTarget_Forward`     | 2 chain, T at vatB           | RemoteTarget routing via wire                   |
 | `Unit_Pipelining_On_Promise`    | 2 chain, p_1 at vatB, T at vatA | RemotePromise pipelined sends; LocalPromise queue+drain |
 
@@ -21,7 +21,7 @@ empty and no `op:resolve` ever fires; we test only the dispatch and
 queue/drain mechanics, not the resolution-propagation policies (which
 are exercised by the policy MCs in `models/`).
 
-## Phase 2: dynamic listener registration
+## Dynamic listener registration (op:listen)
 
 | MC                                 | Topology                          | What it exercises                                 |
 |------------------------------------|-----------------------------------|---------------------------------------------------|
@@ -31,7 +31,7 @@ are exercised by the policy MCs in `models/`).
 Both use `EmptyInitialListeners = TRUE` + `EnableDynamicListen = TRUE`
 so the only listener registration is via the `Listen` action.
 
-## Phase 3: opaque three-party handoff (3PHO)
+## Opaque three-party handoff (3PHO)
 
 | MC                                  | Topology                                     | What it exercises                                       |
 |-------------------------------------|----------------------------------------------|---------------------------------------------------------|
@@ -48,7 +48,7 @@ pipelined sends through `pw`.
 
 | MC                                   | Topology                                          | What it exercises                                                  |
 |--------------------------------------|---------------------------------------------------|--------------------------------------------------------------------|
-| `Unit_EJavaFlush_RefScopedEmbargo`   | vatA holds `RemotePromise(1)->vatB` and `RemoteTarget(2)->vatC`; pre-staged forward via ref 2 sits on `channels[vatA][vatC]`; `op:resolve(1, _)` in flight on `channels[vatB][vatA]` | `RefHasPipelinedForwards` examines only the wire used by the ref under resolution, so unrelated pre-resolve traffic on a different ref/wire does NOT trigger a spurious embargo |
+| `Unit_EJavaFlush_RefScopedEmbargo`   | vatA holds `RemotePromise(1)->vatB` and `RemoteTarget(2)->vatC`; pre-staged forward via ref 2 sits on `channels[vatA][vatC]`; `op:resolve(1, _)` in flight on `channels[vatB][vatA]` | EJavaFlush's per-ref `fresh` sticky bit is scoped to the specific RemotePromise under resolution, so unrelated pre-resolve traffic on a different ref does NOT trigger a spurious embargo (the fast path fires) |
 
 ## Running
 

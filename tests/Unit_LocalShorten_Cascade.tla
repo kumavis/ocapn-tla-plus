@@ -4,8 +4,9 @@
 (* and vatB hosts the terminal LocalTarget at refId 3.                     *)
 (*                                                                         *)
 (* When LocalPromise[1] resolves to LocalPromise[2] (same peer), the spec  *)
-(* must intra-vat-spill its queue into LocalPromise[2].queue (local        *)
-(* shortening, no wire traffic), then drain when [2] resolves.             *)
+(* must intra-vat-spill its queue into LocalPromise[2].queue (intra-vat    *)
+(* promise shortening, no wire traffic), then drain when [2] resolves.    *)
+(* See ../notes/path-changes.md section 1.2.a.                             *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -35,28 +36,7 @@ VARIABLES
 
 vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        MaxGifts <- MaxGifts,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ PS!Init

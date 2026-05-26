@@ -1,0 +1,84 @@
+---------------------- MODULE MC_EJavaFlush_3Chain ----------------------
+(***************************************************************************)
+(* EJavaFlush on a 3-hop chain.                                            *)
+(*                                                                         *)
+(*   Peers   = {vatA, vatB, vatC, vatD}                                    *)
+(*   HeadPeer= vatA                                                        *)
+(*   host    = << "vatB", "vatC", "vatD" >>  (terminal at vatD)            *)
+(*                                                                         *)
+(* On op:resolve at vatB (the only resolver under terminal-only            *)
+(* propagation), the slow-path probe + ack ride end-to-end through         *)
+(* vatC to vatD and back, guaranteeing that any pre-resolve forwards       *)
+(* have been processed at vatD before vatB commits to the post-resolution  *)
+(* path.  Expected to pass; the 3-chain is the smallest scope where a     *)
+(* purely local "outbox empty" embargo signal would fail (see              *)
+(* ../notes/flush-protocols.md section 10.3).  See                         *)
+(* MC_EJavaFlush_4Chain for the Tribble-style race that remains a          *)
+(* tracked limitation of the EJavaFlush family.                            *)
+(***************************************************************************)
+
+EXTENDS TLC, Naturals, Sequences
+
+Peers == {"vatA", "vatB", "vatC", "vatD"}
+HeadPeer == "vatA"
+ChainLength == 3
+MaxRefId == ChainLength
+NumMessages == 3
+EmptyInitialListeners == FALSE
+EnableDynamicListen == FALSE
+EnableHandoff == FALSE
+MaxGifts == 0
+RoutingPolicy == "EJavaFlush"
+
+CONSTANT DebugTrace
+
+VARIABLES
+    channels,
+    host,
+    refs,
+    sent,
+    delivered,
+    gifts,
+    nextGiftId,
+    nextRefId,
+    lastAction
+
+vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
+
+PS == INSTANCE PromiseResolution
+
+Init ==
+    /\ PS!Init
+    /\ host = <<"vatB", "vatC", "vatD">>
+
+Next == PS!Next
+
+Spec == Init /\ [][Next]_vars /\ PS!Fairness
+
+SpecDebug == Init /\ [][Next]_vars
+
+TypeOK_MC == PS!TypeOK
+EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
+PairingInvariant_MC == PS!PairingInvariant
+NoMessageLost_MC == PS!NoMessageLost
+EventualDelivery_MC == PS!EventualDelivery
+
+\* Debug-only forced violation: trips when the EJavaFlush slow path has
+\* completed for at least one RemotePromise AND every send has been
+\* delivered.  The slow-path completion is detected by the post-ack
+\* signature on a RemotePromise (localResolution != ResNone, fresh =
+\* FALSE because something was pipelined through it, embargo = FALSE
+\* because the ack arrived and cleared it).  BFS picks the shortest such
+\* path, so the rendered trace exercises pipelining -> op:resolve ->
+\* probe -> ack -> ProcessHold drain (rather than the trivial
+\* fast-path-only happy path that completes without ever embargoing).
+NoSlowPathCompletion_MC ==
+    ~( /\ Len(delivered) = NumMessages
+       /\ \E p \in Peers : \E r \in 1..MaxRefId :
+            /\ r \in {ri \in 1..MaxRefId : refs[p][ri] # PS!EntryNone}
+            /\ refs[p][r].kind = "RemotePromise"
+            /\ refs[p][r].localResolution # PS!ResNone
+            /\ refs[p][r].fresh = FALSE
+            /\ refs[p][r].embargo = FALSE )
+
+============================================================================

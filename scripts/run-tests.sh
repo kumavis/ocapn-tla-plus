@@ -11,8 +11,9 @@
 #   ./scripts/run-tests.sh --debug MC_NaivePromiseResolution
 #   ./scripts/run-tests.sh --debug MC_EJavaFlush_4Chain
 #   ./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Chain
-# runs models/<name>_Debug.tla + .cfg, writes .tlc-logs/<name>.debug.log and
-# .tlc-logs/<name>.trace.md (mermaid).
+# runs models/<name>.tla against models/<name>_Debug.cfg (which sets
+# DebugTrace = TRUE and SPECIFICATION = SpecDebug), writes
+# .tlc-logs/<name>.debug.log and .tlc-logs/<name>.trace.md (mermaid).
 #
 # Defaults TLA jar location to ~/tla/tla2tools.jar; override with TLA_JAR.
 
@@ -36,33 +37,42 @@ mkdir -p "$LOG_DIR"
 if [[ "${1:-}" == "--debug" ]]; then
   shift
   base="${1:?usage: $0 --debug MC_ModuleName (e.g. MC_NaivePromiseResolution)}"
-  dbg="${base}_Debug"
-  if [[ ! -f "models/${dbg}.tla" || ! -f "models/${dbg}.cfg" ]]; then
-    echo "ERROR: expected models/${dbg}.tla and models/${dbg}.cfg" >&2
+  dbg_cfg="${base}_Debug.cfg"
+  if [[ ! -f "models/${base}.tla" || ! -f "models/${dbg_cfg}" ]]; then
+    echo "ERROR: expected models/${base}.tla and models/${dbg_cfg}" >&2
     exit 2
   fi
   log="$LOG_DIR/${base}.debug.log"
   trace_md="$LOG_DIR/${base}.trace.md"
-  echo "Running TLC debug module ${dbg}..."
+  trace_svg="$LOG_DIR/${base}.trace.svg"
+  echo "Running TLC debug: models/${base}.tla with models/${dbg_cfg}..."
   set +e
   java -cp "$CP" tlc2.TLC \
     -workers "$WORKERS" \
-    -config "models/${dbg}.cfg" \
-    "models/${dbg}.tla" \
+    -config "models/${dbg_cfg}" \
+    "models/${base}.tla" \
     >"$log" 2>&1
   code=$?
   set -e
   {
-    echo "# TLC debug trace: ${dbg}"
+    echo "# TLC debug trace: ${base} (${dbg_cfg})"
     echo
     echo "Exit code: ${code}"
     echo
-    echo "## Mermaid (wire traffic from \`channels\` diffs + step notes from \`lastAction\`)"
+    echo "## Mermaid (enqueue/dequeue events with TLC step prefixes [sN])"
     echo
-    python3 "$ROOT/scripts/trace_to_mermaid.py" <"$log"
+    python3 "$ROOT/scripts/trace_to_mermaid.py" \
+      --svg "$trace_svg" <"$log"
+    echo
+    echo "## Lamport space-time (sibling SVG)"
+    echo
+    echo "See [\`${base}.trace.svg\`](${base}.trace.svg) — diagonals from sender to receiver show transit time across TLC steps."
+    echo
+    echo "![Lamport](${base}.trace.svg)"
   } >"$trace_md"
   echo "Wrote: $log"
   echo "Wrote: $trace_md"
+  [[ -f "$trace_svg" ]] && echo "Wrote: $trace_svg"
   exit 0
 fi
 
@@ -72,7 +82,8 @@ SCENARIO_TESTS=(
   "MC_NoPromiseResolution_3Chain|pass"
   "MC_NaivePromiseResolution|violation"
   "MC_ShorteningUnsafe_4Chain|violation"
-  "MC_EJavaFlush_4Chain|violation"
+  "MC_EJavaFlush_3Chain|pass"
+  "MC_EJavaFlush_4Chain|pass"
   "MC_OpFlushProtocol_4Chain|pass"
   "MC_SubscribeAfterResolve|pass"
   "MC_TerminalHandoff_Baseline|pass"
@@ -93,6 +104,7 @@ UNIT_TESTS=(
   "Unit_Handoff_Pipeline_BeforeDeposit|pass"
   "Unit_Handoff_RejectWrongRecipient|pass"
   "Unit_EJavaFlush_RefScopedEmbargo|pass"
+  "Unit_EJavaFlush_EmbargoFires|violation"
 )
 
 FAIL=0

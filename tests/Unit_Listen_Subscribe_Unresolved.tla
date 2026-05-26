@@ -1,6 +1,6 @@
 ------------------------- MODULE Unit_Listen_Subscribe_Unresolved -------------------------
 (***************************************************************************)
-(* Phase 2 unit test: op:listen arrives at the resolver BEFORE the promise *)
+(* op:listen unit test: op:listen arrives at the resolver BEFORE the promise *)
 (* has been resolved.                                                      *)
 (*                                                                         *)
 (*   Peers     = {vatA, vatB}                                              *)
@@ -44,28 +44,7 @@ VARIABLES
 
 vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        MaxGifts <- MaxGifts,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ PS!Init

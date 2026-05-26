@@ -2,9 +2,9 @@
 
 A modular TLA+ spec for a **linear OCapN ref chain** with a refined
 reference taxonomy (`LocalTarget`, `RemoteTarget`, `LocalPromise`,
-`RemotePromise`), kind-discriminated routing dispatch, local
-shortening, and two flush protocols (`EJavaFlush` and
-`OpFlushProtocol`).
+`RemotePromise`), kind-discriminated routing dispatch, intra-vat
+queue cascade on local resolution, and two end-to-end flush protocols
+(`EJavaFlush` and `OpFlushProtocol`).
 
 The model focuses on the **message-order invariant**
 **`EndToEndRefFIFO`** under a small fixed surface (one sender, one
@@ -19,8 +19,8 @@ Per-peer state `refs[p][r]` for every refId `r`:
 |-----------------|-----------------------------------------------------------------------------------|
 | `LocalTarget`   | (sink owned by `p`)                                                               |
 | `RemoteTarget`  | `targetPeer`, `targetRefId`                                                       |
-| `LocalPromise`  | `queue`, `listeners`, `resolution`, `flushPending`, `notified`                    |
-| `RemotePromise` | `resolverPeer`, `resolverRefId`, `localResolution`, `embargo`, `flushPhase`, `pending` |
+| `LocalPromise`  | `queue`, `listeners`, `resolution`, `flushPending`, `notified`, `flushPhase`      |
+| `RemotePromise` | `resolverPeer`, `resolverRefId`, `localResolution`, `embargo`, `pending`, `listenSent`, `fresh` |
 
 The pinned chain shape is
 
@@ -34,34 +34,80 @@ where `host[1..ChainLength-1]` are promise resolvers and
 capability on every peer that holds an entry for it. Promises are
 1..ChainLength-1; the terminal is at `ChainLength`.
 
+## Path changes (terminology)
+
+A **path change** is any event that changes the network route a
+future send on a ref will take. Path changes are the source of every
+FIFO-violation hazard in this spec: an in-flight send on the *old*
+path can race a new send on the *new* path and arrive at the terminal
+out of order. The routing policies below are different answers to
+the same question — *how do you commit to the new path without
+letting later sends overtake earlier ones?*
+
+The model distinguishes two kinds of path change:
+
+- **Promise resolution** (`LocalPromise` -> `Target`). The promise
+  resolves to a concrete capability (a `LocalTarget` or a
+  `RemoteTarget`). Carried on the wire by
+  `op:resolve(refId, desc:remote-target(...))`. **This is the only
+  kind of path change the spec propagates over the wire.**
+- **Promise shortening** (`LocalPromise` -> another `Promise`):
+  - *Intra-vat:* the new promise is on the same vat. The resolver
+    drains the resolved promise's `queue` directly into the new
+    promise (or recursively into whatever it points to). No wire
+    traffic; tested by `Unit_LocalShorten_Cascade` and exercised as
+    a side effect of every non-terminal `ResolverResolve` in the
+    chain MCs.
+  - *Inter-vat (distributed):* the new promise is on a different vat.
+    **Not modelled.** Would require a `desc:remote-promise` value
+    variant for `op:resolve` plus propagation of learned downstream
+    resolutions through `RemotePromise.localResolution`. This is the
+    largest tracked future-work item — see
+    [`notes/path-changes.md`](notes/path-changes.md) §1.2.b and §3.1.
+
+The word "shortening" in the policy name `ShorteningUnsafe` follows
+the older OCapN-colloquial usage where "shortening" denotes the
+umbrella act of changing a ref's route (i.e. a *path change* in our
+terminology). The name is kept for continuity with the OCapN issue
+threads; it is not specifically about promise-to-promise shortening.
+
 ## Routing policies
 
 Set via the `RoutingPolicy` constant in
 [`spec/PromiseResolution.tla`](spec/PromiseResolution.tla):
 
-- **`"NaivePromiseResolution"`** — listener installs `localResolution`
-  immediately on `op:resolve`; race when head's pipelined ref-1 sends
-  meet head's direct local delivery. Violates `EndToEndRefFIFO`.
 - **`"NoPromiseResolution"`** — listeners are empty, no `op:resolve`
   ever fires; ref-1 sends always ride the wire through the chain.
-  Holds.
-- **`"ShorteningUnsafe"`** — listener installs `localResolution` on
-  `op:resolve` without any flush; same race as Naive but on longer
-  chains. Violates.
-- **`"EJavaFlush"`** — on receipt of `op:resolve` at listener `L`, if
-  `L` has pipelined ref-1 sends in flight, embargo + remember value;
-  wait for `channels[L][resolverPeer]` to drain of `op:deliver-only`,
-  then install + lift. **Local-only signal**, blind to downstream
-  hops; violates `EndToEndRefFIFO` on 4-chains (canonical
-  [kpreid race](https://github.com/ocapn/ocapn/issues/11#issuecomment-4525913499)).
-- **`"OpFlushProtocol"`** — resolver-initiated. `ResolverResolve`
-  sends `op:flush(r)` instead of `op:resolve`; each listener embargos
-  its `RemotePromise[r]`, drains its outgoing channel to the
-  resolver, sends `op:flush-ack`. The resolver waits for all acks
-  AND its own queue/outgoing-to-target drained, then sends
-  `op:resolve`. Under embargo (or while `pending` is non-empty), new
-  sends are held in `RemotePromise.pending` and drain via the
-  shortened path after `op:resolve` arrives. Holds.
+  No path change ⇒ no FIFO hazard. Holds.
+- **`"NaivePromiseResolution"`** — listener installs `localResolution`
+  immediately on `op:resolve` receipt with zero synchronisation
+  against the old path. Path change is unguarded; in-flight pipelined
+  ref-1 sends and post-resolve direct sends race at the terminal.
+  Violates `EndToEndRefFIFO` on a 2-chain.
+- **`"ShorteningUnsafe"`** — same shape as Naive, demonstrated on a
+  longer chain (the standard 4-chain witness). Same unguarded path
+  change. Violates `EndToEndRefFIFO`.
+- **`"EJavaFlush"`** — faithful model of e-on-java's
+  `DelayedRedirector`. Subscriber-initiated end-to-end flush: on
+  `op:resolve` receipt at listener `L`, the fast path
+  (`fresh = TRUE` or `sameConnection`) installs immediately;
+  otherwise `L` emits an `op:e-flush-probe` down the chain along the
+  same FIFO channels as previously-pipelined sends. The terminal
+  acks back to `L`; `L` lifts the embargo and drains its locally-
+  buffered `pending`. Holds for linear chains; the Tribble four-way
+  scenario is a known inherited limitation (see
+  [`notes/path-changes.md`](notes/path-changes.md) §3.1).
+- **`"OpFlushProtocol"`** — resolver-initiated alternative
+  (Ridley proposal, ocapn#11). `ResolverResolve` emits `op:flush(r)`
+  to listeners instead of `op:resolve`; each listener atomically
+  sets `embargo` and enqueues `op:flush-ack` on the same channel
+  (FIFO carries the ordering). Once all acks return and the
+  resolver's own queue is drained, the resolver emits an
+  `op:e-flush-probe` to the terminal and waits for the matching
+  `op:e-flush-probe-ack`; only then does it emit `op:resolve` to
+  listeners. Locality-clean: every state transition is driven by
+  an explicit protocol message; no peer reads another peer's
+  channel state. Holds for linear chains.
 
 ## Message ordering invariant
 
@@ -83,6 +129,38 @@ Two additional invariants:
   `LocalTarget` on its target peer; every `RemotePromise` has a
   matching `LocalPromise` on its resolver peer.
 
+## Modelled features
+
+What the spec currently covers:
+
+- Kind-discriminated reference taxonomy (`LocalTarget`,
+  `RemoteTarget`, `LocalPromise`, `RemotePromise`) with single-
+  dispatch `Route` and terminal-only `op:resolve` propagation.
+- Intra-vat promise shortening via `LocalPromise.queue` cascade
+  (no wire traffic; see `Unit_LocalShorten_Cascade`).
+- Explicit `op:listen` subscription with subscribe-to-already-
+  resolved reply (`MC_SubscribeAfterResolve`,
+  `Unit_Listen_Subscribe_{Unresolved,AfterResolve}`).
+- Opaque three-party handoff (`op:deposit-gift`,
+  `desc:handoff-give`, `op:withdraw-gift`) with pre-mint of
+  `LocalPromise(pw)` on deposit, withdraw-blocks-on-deposit
+  serialization, gift-table one-shot semantics; `MC_TerminalHandoff_*`,
+  `MC_ConcurrentHandoffs`, `Unit_Handoff_*`; `GiftOneShot` and
+  `GiftHasOneRecipient` invariants.
+- Five routing policies covering the spectrum from "no path change
+  at all" through "unguarded path change" to "fully end-to-end-acked
+  path change" (see *Routing policies* above).
+
+What's deferred — see [`notes/path-changes.md`](notes/path-changes.md):
+
+- Inter-vat distributed promise shortening (`desc:remote-promise`
+  variant + propagation of learned downstream resolutions).
+- Tribble four-way scenario MC (requires the above).
+- Per-peer refId namespaces (mechanical translation, currently global).
+- Ref-scoped flush drainage (currently whole-channel-empty).
+- Multi-sender FIFO MCs.
+- Flush protocols under handoff.
+
 ## Layout
 
 ```
@@ -90,7 +168,7 @@ ocapn-tla-plus/
 ├── lib/
 │   ├── References.tla    # ref taxonomy, MkChainRefs, PairingInvariant
 │   ├── Network.tla       # per-pair FIFO channels
-│   └── PeerState.tla     # sent, delivered (global)
+│   └── PeerState.tla     # sent, delivered, gifts, nextGiftId, nextRefId
 ├── spec/
 │   └── PromiseResolution.tla
 ├── models/                # scenario MCs (policy-level race scenarios)
@@ -98,18 +176,34 @@ ocapn-tla-plus/
 │   ├── MC_NoPromiseResolution_3Chain.tla / .cfg
 │   ├── MC_NaivePromiseResolution.tla / .cfg
 │   ├── MC_ShorteningUnsafe_4Chain.tla / .cfg
+│   ├── MC_EJavaFlush_3Chain.tla / .cfg
 │   ├── MC_EJavaFlush_4Chain.tla / .cfg
 │   ├── MC_OpFlushProtocol_4Chain.tla / .cfg
-│   └── *_Debug.tla / .cfg     (DebugTrace TRUE for mermaid)
+│   ├── MC_SubscribeAfterResolve.tla / .cfg       (op:listen subscription)
+│   ├── MC_TerminalHandoff_Baseline.tla / .cfg    (3PHO baseline)
+│   ├── MC_TerminalHandoff_WithForwarder.tla / .cfg (3PHO + forwarder race)
+│   ├── MC_ConcurrentHandoffs.tla / .cfg          (gift-table sanity)
+│   └── *_Debug.cfg            (sibling debug cfg per base MC; flips
+│                               DebugTrace = TRUE + SPECIFICATION SpecDebug
+│                               so `run-tests.sh --debug <MC>` renders the
+│                               trace via the same .tla module)
 ├── tests/                 # unit-test MCs (focused, single-mechanism)
 │   ├── Unit_LocalTarget_Direct.tla / .cfg
-│   ├── Unit_LocalShorten_Cascade.tla / .cfg
+│   ├── Unit_LocalShorten_Cascade.tla / .cfg      (intra-vat shortening)
 │   ├── Unit_RemoteTarget_Forward.tla / .cfg
-│   └── Unit_Pipelining_On_Promise.tla / .cfg
+│   ├── Unit_Pipelining_On_Promise.tla / .cfg
+│   ├── Unit_Listen_Subscribe_Unresolved.tla / .cfg
+│   ├── Unit_Listen_Subscribe_AfterResolve.tla / .cfg
+│   ├── Unit_Handoff_DepositWithdraw.tla / .cfg
+│   ├── Unit_Handoff_Pipeline.tla / .cfg
+│   ├── Unit_Handoff_Pipeline_BeforeDeposit.tla / .cfg
+│   ├── Unit_Handoff_RejectWrongRecipient.tla / .cfg
+│   ├── Unit_EJavaFlush_RefScopedEmbargo.tla / .cfg
+│   └── Unit_EJavaFlush_EmbargoFires.tla / .cfg   (positive witness: violation expected)
 ├── notes/
-│   ├── flush-protocols.md
-│   ├── counterexample-naive-promise-resolution.txt
-│   └── promise-shortening-op-flush.md
+│   ├── path-changes.md                           (terminology + tracked future work)
+│   ├── flush-protocols.md                        (wire-level protocol reference)
+│   └── counterexample-naive-promise-resolution.txt
 └── scripts/
     ├── run-tests.sh           # matrix + unit tests; --debug renders mermaid
     ├── trace-to-mermaid.sh
@@ -137,18 +231,26 @@ From the repo root:
 This runs the full **scenario MC matrix** and the **unit tests** and
 exits non-zero on any unexpected outcome (`pass` vs `violation`).
 
-### Debug trace + mermaid
+### Debug trace + mermaid + Lamport space-time diagram
 
 ```bash
 ./scripts/run-tests.sh --debug MC_NaivePromiseResolution
+./scripts/run-tests.sh --debug MC_EJavaFlush_3Chain
 ./scripts/run-tests.sh --debug MC_EJavaFlush_4Chain
 ./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Chain
 ```
 
 Outputs in `.tlc-logs/`:
 
-- `.tlc-logs/<MC>.debug.log` — full TLC output
-- `.tlc-logs/<MC>.trace.md` — mermaid `sequenceDiagram`
+- `.tlc-logs/<MC>.debug.log` — full TLC counterexample dump
+- `.tlc-logs/<MC>.trace.md` — mermaid `sequenceDiagram` with each
+  arrow tagged `[s_send → s_recv]` (transit gap) and explicit per-step
+  dequeue notes
+- `.tlc-logs/<MC>.trace.svg` — Lamport / space-time diagram with
+  vertical peer lines and diagonal send→receive arrows whose slope
+  encodes transit time (steeper = longer in-flight); colors per op
+  kind (deliver / resolve / flush / listen / gift); dashed = still
+  in-flight at trace end
 
 ### Single model
 
@@ -161,25 +263,21 @@ java -cp ~/tla/tla2tools.jar:lib:spec:models:tests tlc2.TLC \
 
 ## What this shows
 
-- **Naive / ShorteningUnsafe**: any policy that installs the
-  shortened path without a flush observably reorders messages.
-- **EJavaFlush**: a local-only embargo-and-drain (resolver-direction
-  channel only) is *not* sufficient on chains of length ≥ 4; messages
-  already past the immediate resolver hop race with post-embargo
-  shortened sends.
-- **OpFlushProtocol**: resolver-initiated upstream flush, plus
-  listener-side `pending` holding for in-flight messages, preserves
-  end-to-end FIFO.
-
-## Roadmap
-
-- Phase 2: explicit `op:listen` subscription + `MC_SubscribeAfterResolve`.
-- Phase 3: opaque 3-Party Handoff (`op:deposit-gift`,
-  `desc:handoff-give`, `op:withdraw-gift`) with `GiftOneShot` and
-  `GiftHasOneRecipient` invariants and `MC_ConcurrentHandoffs`.
+- **Naive / ShorteningUnsafe**: any policy that commits to the new
+  path without an end-to-end flush observably reorders messages.
+- **EJavaFlush**: faithful end-to-end probe + ack along the old path
+  preserves FIFO for linear chains; the Tribble four-way case still
+  defeats it.
+- **OpFlushProtocol**: resolver-initiated `op:flush` to listeners
+  (FIFO carries the per-listener pre-flush draining) plus a
+  resolver-to-target probe + ack (the same primitive EJavaFlush
+  uses) preserves FIFO under the same locality contract — no peer
+  reads another peer's channel state.
 
 See [`notes/flush-protocols.md`](notes/flush-protocols.md) for the
-precise wire-level spec of both flush protocols.
+wire-level spec of every mechanism above, and
+[`notes/path-changes.md`](notes/path-changes.md) for the path-change
+taxonomy and tracked future work.
 
 ## Fingerprint collisions
 

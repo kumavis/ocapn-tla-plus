@@ -1,14 +1,19 @@
 ------------------- MODULE MC_ShorteningUnsafe_4Chain -------------------
 (***************************************************************************)
 (* ChainLength = 4 (three promises + terminal).  Race actor: host[2]      *)
-(* (the only peer that ever installs a localResolution under terminal-only *)
-(* propagation in this iteration).                                         *)
+(* (the only peer that ever installs a localResolution under terminal-    *)
+(* only propagation).                                                      *)
 (*                                                                         *)
 (* host[3] resolves p_3 -> RemoteTarget(host[4], 4); op:resolve fires to  *)
-(* host[2] which immediately installs (ShorteningUnsafe = no embargo).    *)
-(* Subsequent pipelined sends from host[2] take the shortened path via    *)
-(* channels[host[2]][host[4]] while in-flight pre-resolve forwards still  *)
-(* travel via channels[host[2]][host[3]] -> channels[host[3]][host[4]].   *)
+(* host[2] which immediately installs the new path (ShorteningUnsafe =    *)
+(* unguarded path change, no flush).  Subsequent pipelined sends from     *)
+(* host[2] take the post-resolution path via channels[host[2]][host[4]]   *)
+(* while in-flight pre-resolve forwards still travel via                  *)
+(* channels[host[2]][host[3]] -> channels[host[3]][host[4]].              *)
+(*                                                                         *)
+(* "Shortening" in the policy name is OCapN-colloquial for "the act of    *)
+(* changing the route" -- see ../README.md "Path changes" and             *)
+(* ../notes/path-changes.md.                                               *)
 (*                                                                         *)
 (* Expected: EndToEndRefFIFO_MC violated.                                  *)
 (***************************************************************************)
@@ -40,28 +45,7 @@ VARIABLES
 
 vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        MaxGifts <- MaxGifts,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ PS!Init
@@ -72,11 +56,8 @@ Next == PS!Next
 Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
 TypeOK_MC == PS!TypeOK
-
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
-
 PairingInvariant_MC == PS!PairingInvariant
-
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
 

@@ -1,8 +1,8 @@
 ------------------------- MODULE MC_TerminalHandoff_WithForwarder -------------------------
 (***************************************************************************)
-(* Phase 3 forwarder-race scenario: vatA is a forwarder for vatC; vatB    *)
-(* holds a RemotePromise to vatA's forwarder; concurrently vatA runs the  *)
-(* 3PHO to shorten vatB's ref directly to vatC.                          *)
+(* Forwarder-race scenario: vatA is a forwarder for vatC; vatB           *)
+(* holds a RemotePromise to vatA's forwarder; concurrently vatA runs the *)
+(* 3PHO to redirect vatB's ref directly to vatC.                          *)
 (*                                                                         *)
 (* Topology (pinned at Init, bypasses MkChainRefs):                       *)
 (*   vatA: refs[1] = LocalPromise(queue=<>, listeners={vatB},             *)
@@ -13,10 +13,11 @@
 (*                                                                         *)
 (* Race: vatB pipelines op:deliver-only on ref 1 (routed via vatA to     *)
 (* vatC); concurrently HandoffInitiate(vatA, vatB, srcRef=2,             *)
-(* existingRefId=1) installs the shorten.  After the withdraw-gift       *)
+(* existingRefId=1) installs the redirect.  After the withdraw-gift      *)
 (* round-trip completes, vatB's localResolution on ref 1 routes future   *)
-(* sends directly to vatC, bypassing vatA.  In-flight pre-shorten        *)
-(* messages may arrive after later direct sends.                          *)
+(* sends directly to vatC, bypassing vatA.  In-flight pre-redirect       *)
+(* messages may arrive after later direct sends -- a path-change race    *)
+(* under handoff (see ../notes/path-changes.md).                          *)
 (*                                                                         *)
 (* Expected: EndToEndRefFIFO violation; NoMessageLost, PairingInvariant, *)
 (* GiftOneShot, GiftHasOneRecipient all hold.                            *)
@@ -50,28 +51,7 @@ VARIABLES
 vars == << channels, host, refs, sent, delivered,
            gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        MaxGifts <- MaxGifts,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ host = <<"vatA", "vatC">>
@@ -79,12 +59,12 @@ Init ==
                  [r \in (1..MaxRefId) |->
                     CASE p = "vatA" /\ r = 1 ->
                             PS!MkLocalPromise(<< >>, {"vatB"},
-                                PS!ResRef("vatA", 2), {}, FALSE)
+                                PS!ResRef("vatA", 2), {}, FALSE, "idle")
                       [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                       [] p = "vatB" /\ r = 1 ->
                             PS!MkRemotePromise("vatA", 1, PS!ResNone,
-                                FALSE, "idle", << >>, TRUE)
+                                FALSE, << >>, TRUE, TRUE)
                       [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalTarget
                       [] OTHER -> PS!EntryNone]]

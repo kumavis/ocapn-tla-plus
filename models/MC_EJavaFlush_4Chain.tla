@@ -1,14 +1,19 @@
 ---------------------- MODULE MC_EJavaFlush_4Chain ----------------------
 (***************************************************************************)
-(* CANONICAL EJavaFlush on a 4-chain.  On op:resolve at host[2], if       *)
-(* refs[host[2]][3] is pipelined (i.e., host[2] has in-flight ref-1 sends),*)
-(* embargo + remember value; wait for channels[host[2]][host[3]] drain,   *)
-(* then install + lift.                                                   *)
+(* CANONICAL EJavaFlush on a 4-chain (faithful DelayedRedirector model).   *)
+(* On op:resolve at host[2] for refs[host[2]][3], if `fresh = FALSE`        *)
+(* (i.e., host[2] has previously pipelined sends through this ref) and    *)
+(* the new target is not in the same vat as the current resolver, host[2] *)
+(* takes the slow path: stage localResolution, set embargo, and emit       *)
+(* op:e-flush-probe on the wire to host[3].  The probe rides the          *)
+(* pipelined chain through host[3] to host[4]; host[4] returns            *)
+(* op:e-flush-probe-ack directly to host[2]; on ack receipt host[2] lifts *)
+(* the embargo and ProcessHold drains the locally-buffered pending.       *)
 (*                                                                         *)
-(* Expected: EndToEndRefFIFO_MC VIOLATED.  The local signal is blind to   *)
-(* messages already forwarded past host[3] (now on                        *)
-(* channels[host[3]][host[4]] or queued at host[3]'s LocalPromise).  The  *)
-(* post-embargo direct path channels[host[2]][host[4]] races them.       *)
+(* Expected: EndToEndRefFIFO_MC PASSES.  The downstream sentinel queues   *)
+(* behind any in-flight ref-1 traffic the probe encounters, so the ack    *)
+(* only returns after every previously-pipelined send has reached         *)
+(* host[4].                                                               *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -23,7 +28,8 @@ EnableDynamicListen == FALSE
 EnableHandoff == FALSE
 MaxGifts == 0
 RoutingPolicy == "EJavaFlush"
-DebugTrace == FALSE
+
+CONSTANT DebugTrace  \* set in .cfg: FALSE for normal run, TRUE for _Debug.cfg
 
 VARIABLES
     channels,
@@ -38,28 +44,7 @@ VARIABLES
 
 vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        MaxGifts <- MaxGifts,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ PS!Init
@@ -69,13 +54,25 @@ Next == PS!Next
 
 Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
+\* SpecDebug: same Init/Next but no fairness; used by _Debug.cfg to render
+\* a single counterexample trace without TLC trying to satisfy liveness.
+SpecDebug == Init /\ [][Next]_vars
+
 TypeOK_MC == PS!TypeOK
-
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
-
 PairingInvariant_MC == PS!PairingInvariant
-
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
+
+\* Debug-only forced violation: see MC_EJavaFlush_3Chain.tla for the
+\* rationale; identical predicate.
+NoSlowPathCompletion_MC ==
+    ~( /\ Len(delivered) = NumMessages
+       /\ \E p \in Peers : \E r \in 1..MaxRefId :
+            /\ r \in {ri \in 1..MaxRefId : refs[p][ri] # PS!EntryNone}
+            /\ refs[p][r].kind = "RemotePromise"
+            /\ refs[p][r].localResolution # PS!ResNone
+            /\ refs[p][r].fresh = FALSE
+            /\ refs[p][r].embargo = FALSE )
 
 ============================================================================

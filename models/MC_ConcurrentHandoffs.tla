@@ -1,6 +1,6 @@
 ------------------------- MODULE MC_ConcurrentHandoffs -------------------------
 (***************************************************************************)
-(* Phase 3 gift-table sanity probe: two concurrent gifters allocate       *)
+(* Gift-table sanity probe: two concurrent gifters allocate              *)
 (* giftId = 1 each, sending separate gifts to the same target host       *)
 (* about the same LocalTarget.  Verifies that (gifter, giftId) keys      *)
 (* coexist in the gift table without collision and that each handoff     *)
@@ -45,28 +45,7 @@ VARIABLES
 vars == << channels, host, refs, sent, delivered,
            gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        MaxGifts <- MaxGifts,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ host = <<"vatC", "vatC">>

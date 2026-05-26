@@ -42,28 +42,7 @@ VARIABLES
 vars == << channels, host, refs, sent, delivered,
            gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        MaxGifts <- MaxGifts,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init ==
     /\ host = <<"vatA", "vatC">>
@@ -71,17 +50,17 @@ Init ==
                  [r \in (1..MaxRefId) |->
                     CASE p = "vatA" /\ r = 1 ->
                             PS!MkLocalPromise(<< >>, {},
-                                PS!ResNone, {}, FALSE)
+                                PS!ResNone, {}, FALSE, "idle")
                       [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                       [] p = "vatB" /\ r = 3 ->
                             PS!MkRemotePromise("vatC", 3, PS!ResNone,
-                                FALSE, "idle", << >>, TRUE)
+                                FALSE, << >>, TRUE, TRUE)
                       [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalTarget
                       [] p = "vatC" /\ r = 3 ->
                             PS!MkLocalPromise(<< >>, {"vatB"},
-                                PS!ResNone, {}, FALSE)
+                                PS!ResNone, {}, FALSE, "idle")
                       [] OTHER -> PS!EntryNone]]
     /\ channels =
          [p \in Peers |->

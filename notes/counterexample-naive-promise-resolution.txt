@@ -12,11 +12,12 @@ position 2. The MC pins a readable witness:
   host[2] = vatA           (terminal hop is local to vatA)
 
 Shape of the bug: vatA pipelines op:deliver-only messages on ref 1 toward
-vatB while p1 is unresolved (pending at vatB). vatB resolves p1 and sends
-op:resolve to vatA. After vatA learns the promise is resolved, naive
-routing lets later sends take a shorten to the terminal (localQueues) while
-an earlier seq is still pending or on the wire, so delivered order for
-(sender=vatA, ref=1) is not strictly increasing.
+vatB while p1 is unresolved (queued at vatB's LocalPromise(1).queue). vatB
+resolves p1 and sends op:resolve to vatA. After vatA installs
+RemotePromise(1).localResolution = ResRef(vatA, 2), naive routing lets
+later sends take the post-resolution path and deliver directly to the
+LocalTarget at vatA, while an earlier seq is still queued or on the wire,
+so delivered order for (sender=vatA, ref=1) is not strictly increasing.
 
 Exact delivered tail depends on TLC's shortest counterexample; one common
 pattern is <<..., seq=2, ...>>, <<..., seq=1, ...>> or <<..., seq=3, ...>>,

@@ -32,28 +32,7 @@ VARIABLES
 
 vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
 
-PS ==
-    INSTANCE PromiseResolution WITH
-        Peers <- Peers,
-        HeadPeer <- HeadPeer,
-        ChainLength <- ChainLength,
-        MaxRefId <- MaxRefId,
-        NumMessages <- NumMessages,
-        RoutingPolicy <- RoutingPolicy,
-        EmptyInitialListeners <- EmptyInitialListeners,
-        EnableDynamicListen <- EnableDynamicListen,
-        EnableHandoff <- EnableHandoff,
-        MaxGifts <- MaxGifts,
-        DebugTrace <- DebugTrace,
-        channels <- channels,
-        host <- host,
-        refs <- refs,
-        sent <- sent,
-        delivered <- delivered,
-        gifts <- gifts,
-        nextGiftId <- nextGiftId,
-        nextRefId <- nextRefId,
-        lastAction <- lastAction
+PS == INSTANCE PromiseResolution
 
 Init == PS!Init
 
@@ -62,13 +41,9 @@ Next == PS!Next
 Spec == Init /\ [][Next]_vars /\ PS!Fairness
 
 TypeOK_MC == PS!TypeOK
-
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
-
 PairingInvariant_MC == PS!PairingInvariant
-
 NoMessageLost_MC == PS!NoMessageLost
-
 EventualDelivery_MC == PS!EventualDelivery
 
 ============================================================================

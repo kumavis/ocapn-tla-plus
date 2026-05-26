@@ -1,6 +1,6 @@
 --------------------------- MODULE References ---------------------------
 (***************************************************************************)
-(* Reference taxonomy (Phase 1b/1c refactor):                              *)
+(* Reference taxonomy:                                                      *)
 (*   Reference        = Promise | Target                                   *)
 (*   Promise          = LocalPromise | RemotePromise                       *)
 (*   Target           = LocalTarget | RemoteTarget                         *)
@@ -12,8 +12,10 @@
 (* logical capability everywhere it appears.  For the pinned chain shape   *)
 (*   HeadPeer -> p_1@host[1] -> ... -> p_{N-1}@host[N-1] -> T@host[N]      *)
 (* refIds 1..ChainLength-1 are promises; ChainLength is the terminal.      *)
-(* Higher refIds (> ChainLength) are reserved for Phase 3 withdraw-promise *)
-(* allocations.                                                            *)
+(* Higher refIds (> ChainLength) are reserved for 3PHO withdraw-promise    *)
+(* allocations.  See ../notes/path-changes.md for the path-change          *)
+(* taxonomy these entries support (promise resolution and intra-vat        *)
+(* promise shortening).                                                    *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences
@@ -29,11 +31,7 @@ ASSUME /\ MaxRefId \in Nat
 
 RefIds == 1..MaxRefId
 ChainRefs == 1..ChainLength
-PromiseRefs == 1..(ChainLength - 1)
 TerminalPos == ChainLength
-
-IsObject(r) == r = TerminalPos
-IsPromise(r) == r \in PromiseRefs
 
 ----------------------------------------------------------------------------
 (* Entry constructors and the EntryNone sentinel. *)
@@ -58,24 +56,46 @@ ResRef(peer, refId) ==
      peer |-> peer,
      refId |-> refId]
 
-MkLocalPromise(queue, listeners, resolution, flushPending, notified) ==
+(* `flushPhase` is OpFlushProtocol's resolver-side bookkeeping for the
+   target-flush probe + ack roundtrip.  Tristate:
+     "idle"    -- no probe sent (initial state, and the steady state
+                  under any policy other than OpFlushProtocol).
+     "out"     -- probe sent on channels[resolver][target], awaiting
+                  op:e-flush-probe-ack.  SendTargetFlushProbe transitions
+                  "idle" -> "out" exactly once per promise resolution.
+     "acked"   -- ack received.  SendOpResolveAfterFlush requires this.
+   When the resolver is itself the target host, SendTargetFlushProbe
+   goes directly "idle" -> "acked" without emitting any probe (no
+   cross-vat hop to flush). *)
+MkLocalPromise(queue, listeners, resolution, flushPending,
+               notified, flushPhase) ==
     [kind |-> "LocalPromise",
      queue |-> queue,
      listeners |-> listeners,
      resolution |-> resolution,
      flushPending |-> flushPending,
-     notified |-> notified]
+     notified |-> notified,
+     flushPhase |-> flushPhase]
 
+(* `fresh` is the sticky bit modelling e-on-java's RemotePromiseHandler.
+   isFresh (set TRUE at construction, cleared FALSE the first time
+   anything is pipelined through this RemotePromise's resolver wire).
+   Consulted by the EJavaFlush fast path: a fresh RemotePromise can
+   commit to the post-resolution path immediately, with no end-to-end
+   flush sentinel, because no in-flight or downstream-buffered message
+   could race the new path.  See the long "EJavaFlush protocol" block
+   in spec/PromiseResolution.tla for the protocol-level rationale and
+   source citations. *)
 MkRemotePromise(resolverPeer, resolverRefId, localResolution,
-                embargo, flushPhase, pending, listenSent) ==
+                embargo, pending, listenSent, fresh) ==
     [kind |-> "RemotePromise",
      resolverPeer |-> resolverPeer,
      resolverRefId |-> resolverRefId,
      localResolution |-> localResolution,
      embargo |-> embargo,
-     flushPhase |-> flushPhase,
      pending |-> pending,
-     listenSent |-> listenSent]
+     listenSent |-> listenSent,
+     fresh |-> fresh]
 
 ----------------------------------------------------------------------------
 (* host[i]: derived alias for "the peer hosting refId i's LocalX entry".  *)
@@ -90,7 +110,7 @@ ResolutionType ==
     {ResNone}
     \cup [kind: {"ref"}, peer: Peers, refId: RefIds]
 
-FlushPhases == {"idle", "out"}
+FlushPhases == {"idle", "out", "acked"}
 
 (* Per-message-type Entry, with Messages a parameter. *)
 RefEntryType(Messages) ==
@@ -101,15 +121,16 @@ RefEntryType(Messages) ==
           listeners: SUBSET Peers,
           resolution: ResolutionType,
           flushPending: SUBSET Peers,
-          notified: BOOLEAN]
+          notified: BOOLEAN,
+          flushPhase: FlushPhases]
     \cup [kind: {"RemotePromise"},
           resolverPeer: Peers,
           resolverRefId: RefIds,
           localResolution: ResolutionType,
           embargo: BOOLEAN,
-          flushPhase: FlushPhases,
           pending: Seq(Messages),
-          listenSent: BOOLEAN]
+          listenSent: BOOLEAN,
+          fresh: BOOLEAN]
 
 (* Domain of allocated entries on peer p. *)
 DOMrefs(p) == {r \in RefIds : refs[p][r] # EntryNone}
@@ -155,8 +176,9 @@ MkChainRefs(h, listenersFn) ==
             THEN IF h[r] = p THEN MkLocalTarget
                  ELSE MkRemoteTarget(h[r], r)
             ELSE IF h[r] = p
-            THEN MkLocalPromise(<< >>, listenersFn[r], ResNone, {}, FALSE)
-            ELSE MkRemotePromise(h[r], r, ResNone, FALSE, "idle", << >>, FALSE)
+            THEN MkLocalPromise(<< >>, listenersFn[r], ResNone, {},
+                                FALSE, "idle")
+            ELSE MkRemotePromise(h[r], r, ResNone, FALSE, << >>, FALSE, TRUE)
         ]
     ]
 
