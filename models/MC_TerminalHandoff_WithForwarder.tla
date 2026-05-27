@@ -34,6 +34,7 @@ NumMessages == 2
 EmptyInitialListeners == TRUE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
+EnableHandoffInitiate == TRUE
 RoutingPolicy == "NoPromiseResolution"
 DebugTrace == FALSE
 
@@ -87,4 +88,6 @@ NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
+WireDescriptorContract_MC == PS!WireDescriptorContract
+TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
 ============================================================================

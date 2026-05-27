@@ -25,7 +25,7 @@ a `LocalPromise` ends up resolving to.
 A `LocalPromise` resolves to a `Target` (`LocalTarget` or
 `RemoteTarget`) — a concrete capability, not another promise.
 
-- **Wire propagation:** `op:resolve(refId, desc:remote-target(peer, refId'))`
+- **Wire propagation:** `op:resolve(refId, desc:import-target | desc:export-target | desc:handoff-give)`
   is sent from the resolver to every listener.
 - **Listener effect:** the listener installs `RemotePromise.localResolution`
   to the new target; future sends route directly through the target
@@ -34,7 +34,8 @@ A `LocalPromise` resolves to a `Target` (`LocalTarget` or
   (`NaivePromiseResolution`, `ShorteningUnsafe`, `EJavaFlush`,
   `OpFlushProtocol`). The chain `H -> p_1 -> ... -> p_{N-1} -> T@host[N]`
   emits exactly one `op:resolve` of this form: from `host[N-1]` (which
-  is adjacent to the terminal) carrying `desc:remote-target(host[N], N)`.
+  is adjacent to the terminal) carrying `desc:import-target` or
+  `desc:export-target` as appropriate for each listener.
 
 This is the **only** kind of path change that travels over the wire in
 the current spec.
@@ -71,7 +72,7 @@ listeners would need to learn about the new promise's host so they can
 shorten their own dispatch through it. This would require:
 
 1. A `desc:remote-promise(peer, refId)` value variant for `op:resolve`,
-   alongside `desc:remote-target` and `desc:handoff-give`.
+   alongside the import/export target descriptors and `desc:handoff-give`.
 2. Each chain node propagating learned downstream resolutions to its
    own listeners (the `RemotePromise.localResolution` field is already
    threaded through the spec's `Route` recursion as the substrate for
@@ -171,12 +172,85 @@ scenarios fall out naturally once handoff produces multiple ref
 holders, but no MC currently exercises this. A small `MC_MultiSender`
 that drives two `HeadPeer`s into the same chain would close the gap.
 
-### 3.5 Flush protocols under handoff
+### 3.5 Wire descriptor invariants in dynamic MCs
 
-No MC exercises `EJavaFlush` or `OpFlushProtocol` with
-`EnableHandoff = TRUE`. Three-party handoff is the original motivating
-use case for the resolver-initiated flush in the Ridley proposal, so a
-combined MC is worth having once §3.1's infrastructure lands.
+`spec/PromiseResolution.tla` defines two global invariants over
+`channels`: `WireDescriptorContract` (no `desc:handoff-give` with
+`targetHost \in {sender, receiver}`) and `TwoPartyWireDescsOnly` (every
+non-handoff `op:resolve` descriptor is in `TargetWireDescs`). They are
+currently checked only by the static-state `Unit_WireDesc_DescriptorChoice`
+unit (`Spec == Init /\ [][Stutter]_vars`, 1 distinct state). Every
+dynamic MC with `EnableHandoff = TRUE` should add both invariants to its
+`.cfg`. Per-state cost is O(|Peers|² × FIFO depth) — a few percent at
+most — and state counts are unchanged.
+
+Affected configs: `MC_EJavaFlush_3Chain.cfg`, `MC_EJavaFlush_4Chain.cfg`,
+`MC_OpFlushProtocol_4Chain.cfg`, `MC_ShorteningUnsafe_4Chain.cfg`,
+`MC_TerminalHandoff_Baseline.cfg`, `MC_TerminalHandoff_WithForwarder.cfg`,
+`MC_ConcurrentHandoffs.cfg`, and the four `Unit_Handoff_*.cfg` units.
+
+### 3.6 EJavaFlush debug invariant `NoSlowPathCompletion_MC` no longer scopes the slow path
+
+`MC_EJavaFlush_3Chain.tla` and `MC_EJavaFlush_4Chain.tla` define a debug
+invariant intended to force TLC's BFS to render the shortest trace that
+exercises the EJavaFlush slow path (`OpEFlushProbe -> OpEFlushProbeAck
+-> ProcessHold` drain). The predicate matches a `RemotePromise` with
+`localResolution # ResNone, fresh = FALSE, embargo = FALSE`.
+
+With `EnableHandoff = TRUE`, BFS now finds a shorter satisfying state on
+a *handoff withdraw-promise* `pw > ChainLength`: the recipient pipelines
+through `refs[pw]` (clears `fresh`), then `op:withdraw-gift` resolves
+the target host's `LocalPromise(pw)` and the resulting
+`op:resolve(pw, desc:import-target)` takes the `isHandoffPw ->
+installNow` branch in `ReceiveNetwork`, which writes `embargo := FALSE`
+without ever sending a probe. The debug log then has zero
+`op:e-flush-probe*` events (verified on the current 3-Chain and 4-Chain
+debug runs).
+
+Fix: scope the existential to chain refs only — replace
+`\E r \in 1..MaxRefId` with `\E r \in 1..ChainLength` in both EJavaFlush
+model files. (`MC_OpFlushProtocol_4Chain.tla`'s predicate is not
+affected: it requires `flushPhase = "acked"`, which only the
+resolver-side slow-path actions set, so handoff withdraw-promises
+cannot satisfy it.)
+
+### 3.7 Focused unit coverage for the chain-form `handoff-give` slow path
+
+The chain MCs incidentally cover the `desc:handoff-give` chain-form
+`chainEmbargo` branch in `ReceiveNetwork` (an `embargo=TRUE` invariant
+violation is reachable in `MC_EJavaFlush_3Chain` within ~180 distinct
+states), but the focused units that were supposed to pin this slow path
+had been silently downgraded by the descriptor refactor into 2-party
+`desc:export-target` / `desc:import-target` scenarios. Restored as
+follows:
+
+  - **`tests/Unit_EJavaFlush_EmbargoFires.tla`** — rewritten back to its
+    original 3-party intent, with `vatC` introducing `T@vatA` to its
+    listener `vatB` via `desc:handoff-give`. `vatB` has already
+    pipelined a forward through its chain ref to `vatC`, so
+    `chainEntry.fresh = FALSE` and the chain-form receive takes
+    `chainEmbargo = TRUE`. Witness invariant `EmbargoNeverFires_MC`
+    fires (expected: violation).
+  - **`tests/Unit_EJavaFlush_RefScopedEmbargo.tla`** — rewritten as the
+    matching 3-party negative test: `vatB` introduces `T@vatC` to
+    `vatA` via `desc:handoff-give`, with unrelated pre-resolve traffic
+    on `channels[vatA][vatC]` keyed by `vatA.refs[2]`. Because
+    `vatA.refs[1].fresh = TRUE`, `chainEmbargo = FALSE` and no
+    spurious embargo lands on `vatA.refs[1]` (expected: pass).
+  - **`tests/Unit_EJavaFlush_HandoffChainProbe.tla` (new)** — same
+    pre-state as `EmbargoFires`, with a stronger joint witness:
+    `HandoffChainNoSlowPath_MC` asserts the negation of
+    `(vats[recipient].refs[targetRefId].embargo = TRUE) /\
+    (channels[recipient][resolverPeer]` contains
+    `op:e-flush-probe(originPeer=recipient, originRefId=targetRefId,
+    refId=chainEntry.resolverRefId))`. TLC reports a violation; the
+    counterexample's terminal state has both effects in the same
+    `ReceiveNetwork` step (expected: violation). Catches asymmetric
+    regressions (probe-without-embargo or embargo-without-probe) that
+    `EmbargoFires` alone would miss.
+
+All three units are wired into `scripts/run-tests.sh` with their
+expected outcomes.
 
 ## References
 

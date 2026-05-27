@@ -46,9 +46,23 @@ pipelined sends through `pw`.
 
 ## EJavaFlush gate precision
 
+All three units below are 3-party scenarios introduced via
+`desc:handoff-give` (the only descriptor shape the wire contract allows
+for a third-party introduction).  They pin the chain-form
+`chainEmbargo` arm of the `desc:handoff-give` receive in
+`ReceiveNetwork`; see `notes/path-changes.md` §3.7.
+
 | MC                                   | Topology                                          | What it exercises                                                  |
 |--------------------------------------|---------------------------------------------------|--------------------------------------------------------------------|
-| `Unit_EJavaFlush_RefScopedEmbargo`   | vatA holds `RemotePromise(1)->vatB` and `RemoteTarget(2)->vatC`; pre-staged forward via ref 2 sits on `channels[vatA][vatC]`; `op:resolve(1, _)` in flight on `channels[vatB][vatA]` | EJavaFlush's per-ref `fresh` sticky bit is scoped to the specific RemotePromise under resolution, so unrelated pre-resolve traffic on a different ref does NOT trigger a spurious embargo (the fast path fires) |
+| `Unit_EJavaFlush_RefScopedEmbargo`   | vatA holds `RemotePromise(1)->vatB` and `RemoteTarget(2)->vatC`; unrelated forward via ref 2 sits on `channels[vatA][vatC]`; `op:resolve(1, desc:handoff-give(vatB, vatC, _, 3))` in flight on `channels[vatB][vatA]` | EJavaFlush's per-ref `fresh` sticky bit is scoped to the specific RemotePromise under resolution: unrelated traffic on `vatA.refs[2]` does NOT clear `vatA.refs[1].fresh`, so `chainFresh = TRUE` and no spurious embargo lands on `vatA.refs[1]` (the fast path fires) |
+| `Unit_EJavaFlush_EmbargoFires`       | 3 chain T@vatA <- vatC <- vatB; `vatC` resolves `p2` to `T@vatA` and emits `desc:handoff-give` to listener `vatB`; `vatB` has already pipelined a forward to its resolver (`vatB.refs[2].fresh = FALSE`) | Positive witness: the chain-form receive consults `vatB.refs[2].fresh`, computes `chainEmbargo = TRUE`, and sets `vatB.refs[2].embargo := TRUE`.  Expected outcome: violation (`EmbargoNeverFires_MC` is the negation of the witness) |
+| `Unit_EJavaFlush_HandoffChainProbe`  | identical pre-state to `EmbargoFires` | Joint witness for the same slow path: asserts the negation of `(vats[vatB].refs[2].embargo = TRUE) /\ (op:e-flush-probe(originPeer=vatB, originRefId=2, refId=2)` in `channels[vatB][vatC])`, so the violation trace pins both effects in the SAME `ReceiveNetwork` step.  Catches asymmetric regressions (probe-without-embargo or embargo-without-probe) that `EmbargoFires` alone would miss.  Expected outcome: violation |
+
+## Wire descriptor contract
+
+| MC                                | Topology                                  | What it exercises                                                         |
+|-----------------------------------|-------------------------------------------|---------------------------------------------------------------------------|
+| `Unit_WireDesc_DescriptorChoice`  | 3 peers, statically pre-staged channels   | Sanity check that `desc:import-target` / `desc:export-target` / `desc:handoff-give` are emitted only in the situations the wire contract allows (`WireDescriptorContract`, `TwoPartyWireDescsOnly` and the `*Classified_MC` shape predicates hold on the initial state) |
 
 ## Running
 

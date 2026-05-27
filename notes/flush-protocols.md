@@ -18,7 +18,9 @@ for definitions and for the implementability contract.
   term in [`path-changes.md`](path-changes.md).
 - **promise resolution** — a `LocalPromise` resolves to a `Target`
   (`LocalTarget` or `RemoteTarget`). Propagated on the wire by
-  `op:resolve(refId, desc:remote-target(...))`.
+  `op:resolve(refId, value)` where `value` is one of the import/export
+  target descriptors below, or `desc:handoff-give` for third-party
+  introductions.
 - **intra-vat promise shortening** — a `LocalPromise` at peer `H`
   resolves to another ref *also hosted at* `H`; `H` drains the
   resolving promise's queue directly into the new ref. **No wire
@@ -95,11 +97,19 @@ the existing chain models' shared `ChainRefs` convention.
 
 Real OCapN uses per-peer (per-session) refId namespaces: each peer
 maintains its own import/export tables, and messages reference refIds in
-the destination peer's namespace. `op:listen(subscriberRefId,
-resolverRefId)` would carry both sides' refIds so the resolver knows
-which answer-position to address its `op:resolve` to. Translating the v0
-model to per-peer namespaces is a mechanical change and is out of scope
-here.
+the destination peer's namespace. Import/export descriptors encode this
+from the **receiver's** perspective (`desc:import-target` when the
+capability is hosted on the sender; `desc:export-target` when it is
+hosted on the receiver). `desc:handoff-give` is reserved for third-party
+introductions. `op:listen(subscriberRefId, resolverRefId)` would carry
+both sides' refIds so the resolver knows which answer-position to address
+its `op:resolve` to. Translating the v0 model to per-peer namespaces is
+a mechanical change and is out of scope here.
+
+Chain MCs that resolve through a third peer allocate one withdraw-
+promise refId per resolver-driven handoff; set `MaxGifts >= ChainLength
+- 1` and `MaxRefId == ChainLength + MaxGifts` so `nextRefId` stays
+within `TypeOK`.
 
 ### `LocalPromise.resolution` vs `RemotePromise.localResolution`
 
@@ -156,8 +166,8 @@ When a `LocalPromise pa` at `H` becomes resolved to `R'`:
 
 | `R'.kind`              | Notify listeners?                              | 3PHO? |
 | ---------------------- | ---------------------------------------------- | ----- |
-| `LocalTarget`          | Yes — `op:resolve(targetRefId, desc:remote-target(H, R'_local))` per listener | No — listener already has session with `H` |
-| `RemoteTarget`         | Yes — `op:resolve(targetRefId, desc:handoff-give(...))` per listener | **Yes** — listener has no session with `R'.targetPeer` |
+| `LocalTarget`          | Yes — `op:resolve(targetRefId, desc:import-target(R'_local))` per listener when the target is on the resolver; `desc:export-target` when the listener hosts the target | No — listener already has session with `H` when two-party |
+| `RemoteTarget`         | Yes — `op:resolve(targetRefId, desc:handoff-give(...))` per listener when the target host is a third peer; `desc:export-target` when the listener is the target host | **Yes** — when the listener has no session with `R'.targetPeer` |
 | `LocalPromise`         | **No** — silent; listeners stay on their `RemotePromise` to `H`; `H` drains `pa.queue` into `R'.queue` (intra-vat cascade) | n/a |
 | `RemotePromise`        | **No** — silent; listeners stay on their `RemotePromise` to `H`; `H` drains `pa.queue` over the wire to `R'.resolverPeer` | n/a |
 
@@ -167,9 +177,12 @@ own listeners. That's the deferred inter-vat distributed promise
 shortening — see [`path-changes.md`](path-changes.md) §1.2.b / §3.1.
 
 Rule of thumb: an `op:resolve` is sent iff the resolution introduces the
-listener to a *terminal* capability (`Target`). When `R'` is a peer the
-listener already knows (`LocalTarget` on `H`), the bypass uses a plain
-`desc:remote-target`; when `R'` is a third peer, 3PHO is required.
+listener to a *terminal* capability (`Target`). When the capability is
+hosted on the sender or receiver, use the matching import/export
+descriptor (from the **receiver's** perspective: `desc:import-target`
+when the target lives on the sender, `desc:export-target` when it lives
+on the receiver). When the capability host is a third peer, 3PHO
+(`desc:handoff-give`) is required.
 
 ## 5. Wire messages and descriptors
 
@@ -194,18 +207,25 @@ op:e-flush-probe-ack(originRefId)
 the wire by themselves):
 
 ```
+desc:import-target(refId)     -- target hosted on the sender
+desc:export-target(refId)     -- target hosted on the receiver
+desc:import-promise(refId)    -- promise hosted on the sender
+desc:export-promise(refId)    -- promise hosted on the receiver
 desc:handoff-give(gifter, targetHost, giftId, envelope)
-desc:remote-target(peer, refId)
 ```
 
-`op:resolve`'s `value` slot is a tagged union over `desc:remote-target`
-and `desc:handoff-give`. A `desc:remote-promise` variant would be
-required to land distributed inter-vat promise shortening — see
-[`path-changes.md`](path-changes.md) §1.2.b. The target host's
-response to an `op:withdraw-gift` is just an
-`op:resolve(withdrawPromiseRefId, desc:remote-target(...))` — same
-`op:resolve` message, different `value` variant. No separate "gift
-response" message exists.
+`op:resolve`'s `value` slot is a tagged union over the import/export
+descriptors and `desc:handoff-give`. Import and export are always from
+the perspective of the peer that **receives** the message. A message
+from `vatA` to `vatB` that introduces a target hosted on `vatB` carries
+`desc:export-target`; one introducing a target hosted on `vatA` carries
+`desc:import-target`. `desc:handoff-give` is reserved for third-party
+capabilities whose host is neither endpoint. A `desc:remote-promise`
+variant would be required to land distributed inter-vat promise
+shortening — see [`path-changes.md`](path-changes.md) §1.2.b. The target
+host's response to an `op:withdraw-gift` is
+`op:resolve(withdrawPromiseRefId, desc:import-target(...))` — the
+recipient imports the deposited target from the target host.
 
 `op:resolve` identifies the resolver side via the channel's `from` field;
 the `targetRefId` identifies the specific `RemotePromise` *on the listener*
@@ -329,14 +349,51 @@ Step-by-step:
    - otherwise: install
      `vats[host[N]].refs[pw].resolution = ResRef(host[N], r_T_local)`
      and `vats[host[N]].refs[pw].notified = TRUE`; append a direct
-     `op:resolve(pw, desc:remote-target(host[N], r_T_local))` to
+     `op:resolve(pw, desc:import-target(r_T_local))` to
      `channels[host[N]][host[N-2]]`. *No nested 3PHO*.
    - clear `vats[host[N]].gifts[host[N-1]][giftId] := NoGift` (one-shot
      consumption) in the same `vats EXCEPT` update.
-5. **`host[N-2]` receives** `op:resolve(pw, desc:remote-target(host[N],
-   r_T_local))` via `ReceiveNetwork`. Installs
-   `vats[host[N-2]].refs[pw].localResolution = RemoteTarget(host[N],
-   r_T_local)`.
+5. **`host[N-2]` receives** `op:resolve(pw, desc:import-target(r_T_local))`
+   via `ReceiveNetwork`. Installs
+   `vats[host[N-2]].refs[pw].localResolution = ResRef(host[N], r_T_local)`.
+
+### Chain-form `desc:handoff-give` and the flush dispatch
+
+When a `desc:handoff-give` carries a chain-form `targetRefId` (i.e.,
+`targetRefId # pw`) the recipient is rebinding an existing
+`RemotePromise` from the old resolver-path to a fresh direct path
+through `pw → targetHost`. This rebinding is structurally identical
+to receiving `desc:import-target`/`desc:export-target` on the same
+ref: future sends take the new route while pre-resolve sends may still
+be in flight on the old route. The receive branch therefore applies
+the same flush dispatch as the import/export branch on the *existing*
+`vats[recipient].refs[targetRefId]`:
+
+- **`EJavaFlush`.** Fast path when `targetRefId.fresh = TRUE`
+  (nothing was ever pipelined through it) — install
+  `localResolution = ResRef(self, pw)` immediately, no embargo.
+  `sameConnection` cannot apply: `targetHost` is by construction a
+  third peer (otherwise the resolver would have emitted an
+  `desc:import-target`/`desc:export-target` instead). Slow path
+  otherwise: set `embargo = TRUE` on `targetRefId` and emit
+  `op:e-flush-probe` on `channels[self][resolverPeer]` (the old
+  wire) with `originRefId = targetRefId`. The probe queues behind
+  in-flight forwards; the ack from `targetHost` lifts the embargo
+  and `ProcessHold` drains
+  `vats[self].refs[targetRefId].pending` through the now-committed
+  `localResolution = ResRef(self, pw)`, which routes directly to
+  `targetHost`.
+- **`OpFlushProtocol`.** The receiver's embargo on `targetRefId` was
+  set when it processed the resolver's preceding `op:flush(targetRefId)`;
+  the resolver has since completed its target-side
+  `op:e-flush-probe` roundtrip and only then emitted this `op:resolve`.
+  Clear `embargo = FALSE` so `ProcessHold` drains `pending` through
+  the new `pw` route.
+- **Other policies.** Leave `embargo` at its existing value (always
+  `FALSE` under Naive/Shortening/NoPromiseResolution).
+
+The standalone case (`targetRefId = pw`) has no existing ref to embargo;
+the recipient just mints `vats[self].refs[pw]` and sends `op:withdraw-gift`.
 
 ### Pipelined-pre-resolve sends
 
@@ -373,13 +430,9 @@ When `op:listen(subscriber, refId)` arrives at `h` and
 
 - Immediately reply with the same `op:resolve(refId, value)` the
   resolver would have sent when it first resolved:
-  - `value = desc:remote-target(...)` if the resolution is a
-    `LocalTarget` on `h` (bypass case).
-  - Fresh 3PHO triplet (`op:deposit-gift` to target host plus
-    `op:resolve(..., desc:handoff-give(...))` to `subscriber`,
-    consuming a fresh `vats[h].nextGiftId`) if the resolution is a
-    `RemoteTarget`. *Not modelled in v0; see
-    [`notes/path-changes.md`](path-changes.md).*
+  - `value = desc:import-target(...)` or `desc:export-target(...)` for
+    two-party target resolutions; fresh 3PHO triplet for third-party
+    `RemoteTarget` resolutions.
 
 The handler also records `subscriber` in `vats[h].refs[refId].listeners`
 for bookkeeping. If `vats[h].refs[refId].resolution = ResNone`, the
@@ -516,17 +569,17 @@ Wire messages:
   `originPeer`. Carries only the `originRefId` so the originator can
   match it to its outstanding state.
 
-Receive of `op:resolve(r, desc:remote-target(p, r'))` at `L`:
+Receive of `op:resolve(r, desc:import-target(r') | desc:export-target(r'))` at `L`:
 
 1. Evaluate **fast-path** predicates (purely local at `L`, via
    `LocalRef(L, r)`):
    - `isFresh := LocalRef(L, r).fresh`
-   - `sameConn := msg.value.peer = LocalRef(L, r).resolverPeer`
+   - `sameConn := desc is import-* AND from = LocalRef(L, r).resolverPeer`
    - `fastPath := isFresh \/ sameConn`
-2. If `fastPath`: install `localResolution = ResRef(p, r')`; `embargo`
+2. If `fastPath`: install `localResolution = DescToResRef(L, from, msg.value)`; `embargo`
    stays `FALSE`. Future sends route directly through the installed
    `localResolution` via the normal `Route` recursion.
-3. Otherwise (**slow path**): stage `localResolution = ResRef(p, r')`,
+3. Otherwise (**slow path**): stage `localResolution = DescToResRef(L, from, msg.value)`,
    set `embargo = TRUE`, and append
    `OpEFlushProbe(L, r, LocalRef(L, r).resolverRefId)` to
    `channels[L][LocalRef(L, r).resolverPeer]` (via
@@ -656,7 +709,7 @@ the probe at its `LocalTarget` terminus and emits
 On ack receipt at `host[3]`, the resolver's `LocalPromise.flushPhase`
   transitions `"out" -> "acked"`, which enables
 `SendOpResolveAfterFlush`: `host[3]` emits `op:resolve(p_2,
-desc:remote-target(host[4], T's refId))` to `host[2]`. `host[2]`'s
+desc:import-target(host[4], T's refId))` to `host[2]`. `host[2]`'s
 subsequent sends on the post-resolution path strictly follow all
 old-path traffic.  **FIFO preserved.**
 

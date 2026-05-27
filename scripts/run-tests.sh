@@ -48,6 +48,7 @@ if [[ "${1:-}" == "--debug" ]]; then
   echo "Running TLC debug: models/${base}.tla with models/${dbg_cfg}..."
   set +e
   java -cp "$CP" tlc2.TLC \
+    -metadir "$LOG_DIR/tlc-meta" \
     -workers "$WORKERS" \
     -config "models/${dbg_cfg}" \
     "models/${base}.tla" \
@@ -105,6 +106,8 @@ UNIT_TESTS=(
   "Unit_Handoff_RejectWrongRecipient|pass"
   "Unit_EJavaFlush_RefScopedEmbargo|pass"
   "Unit_EJavaFlush_EmbargoFires|violation"
+  "Unit_EJavaFlush_HandoffChainProbe|violation"
+  "Unit_WireDesc_DescriptorChoice|pass"
 )
 
 FAIL=0
@@ -120,6 +123,7 @@ run_one() {
 
   set +e
   java -cp "$CP" tlc2.TLC \
+    -metadir "$LOG_DIR/tlc-meta" \
     -workers "$WORKERS" \
     -config "${dir}/${module}.cfg" \
     "${dir}/${module}.tla" \

@@ -21,12 +21,13 @@ EXTENDS TLC, Naturals, Sequences
 Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
 ChainLength == 4
-MaxRefId == ChainLength
+MaxGifts == 3
+MaxRefId == ChainLength + MaxGifts
 NumMessages == 3
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
-EnableHandoff == FALSE
-MaxGifts == 0
+EnableHandoff == TRUE
+EnableHandoffInitiate == FALSE
 RoutingPolicy == "OpFlushProtocol"
 
 CONSTANT DebugTrace  \* set in .cfg: FALSE for normal run, TRUE for _Debug.cfg
@@ -61,6 +62,8 @@ EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
+WireDescriptorContract_MC == PS!WireDescriptorContract
+TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
 
 \* Debug-only forced violation: trips when the OpFlushProtocol round
 \* (op:flush -> op:flush-ack -> op:e-flush-probe -> op:e-flush-probe-ack

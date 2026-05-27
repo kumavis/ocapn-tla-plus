@@ -27,6 +27,7 @@ NumMessages == 1
 EmptyInitialListeners == TRUE
 EnableDynamicListen == TRUE
 EnableHandoff == FALSE
+EnableHandoffInitiate == FALSE
 MaxGifts == 0
 RoutingPolicy == "NaivePromiseResolution"
 DebugTrace == FALSE

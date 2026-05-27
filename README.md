@@ -49,8 +49,12 @@ The model distinguishes two kinds of path change:
 - **Promise resolution** (`LocalPromise` -> `Target`). The promise
   resolves to a concrete capability (a `LocalTarget` or a
   `RemoteTarget`). Carried on the wire by
-  `op:resolve(refId, desc:remote-target(...))`. **This is the only
-  kind of path change the spec propagates over the wire.**
+  `op:resolve(refId, desc:import-target | desc:export-target | ...)`.
+  Import/export are from the **receiver's** perspective: a target
+  hosted on the sender is `desc:import-target`; one hosted on the
+  receiver is `desc:export-target`. Third-party introductions use
+  `desc:handoff-give` only. **This is the only kind of path change
+  the spec propagates over the wire** (for target resolutions).
 - **Promise shortening** (`LocalPromise` -> another `Promise`):
   - *Intra-vat:* the new promise is on the same vat. The resolver
     drains the resolved promise's `queue` directly into the new
@@ -200,7 +204,9 @@ ocapn-tla-plus/
 │   ├── Unit_Handoff_Pipeline_BeforeDeposit.tla / .cfg
 │   ├── Unit_Handoff_RejectWrongRecipient.tla / .cfg
 │   ├── Unit_EJavaFlush_RefScopedEmbargo.tla / .cfg
-│   └── Unit_EJavaFlush_EmbargoFires.tla / .cfg   (positive witness: violation expected)
+│   ├── Unit_EJavaFlush_EmbargoFires.tla / .cfg       (positive witness: violation expected)
+│   ├── Unit_EJavaFlush_HandoffChainProbe.tla / .cfg  (joint embargo+probe witness: violation expected)
+│   └── Unit_WireDesc_DescriptorChoice.tla / .cfg     (import/export/handoff wire contract)
 ├── notes/
 │   ├── path-changes.md                           (terminology + tracked future work)
 │   ├── flush-protocols.md                        (wire-level protocol reference)

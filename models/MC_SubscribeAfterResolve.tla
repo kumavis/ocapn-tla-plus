@@ -20,7 +20,8 @@
 (*   - At any time vatB may Listen -> op:listen on the wire.               *)
 (*   - vatA's ReceiveNetwork on op:listen sees resolution set AND target;  *)
 (*     adds vatB to listeners, replies with                                *)
-(*     op:resolve(1, desc:remote-target(vatA, 2)).                         *)
+(*     op:resolve(1, desc:import-target(2)).  (Target is on the sender    *)
+(*     vatA, so from receiver vatB's perspective it is an import.)         *)
 (*   - vatB receives op:resolve and installs localResolution.              *)
 (*                                                                         *)
 (* All invariants hold throughout.                                         *)
@@ -36,6 +37,7 @@ NumMessages == 1
 EmptyInitialListeners == TRUE
 EnableDynamicListen == TRUE
 EnableHandoff == FALSE
+EnableHandoffInitiate == FALSE
 MaxGifts == 0
 RoutingPolicy == "NaivePromiseResolution"
 DebugTrace == FALSE

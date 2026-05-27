@@ -135,6 +135,27 @@ above. Reads go through the accessor operators in `lib/PeerState.tla`
   performed by the recipient when it processes
   `op:resolve(desc:handoff-give)` (see `ReceiveNetwork`); invalid
   combinations are silently dropped at the recipient.
+- **`ResolverResolve`** (3PHO branch) — actor: **bound `self`** (the
+  resolver of `LocalPromise(r)`). When a listener `L` requires a
+  third-party introduction (resolution target host `H` is neither
+  `self` nor `L`), the resolver allocates `(gid, pw)` from its own
+  `nextGiftId` and `nextRefId`, appends `op:deposit-gift` on
+  `channels[self][H]`, and appends `op:resolve(r, desc:handoff-give(
+  self, H, gid, pw))` on `channels[self][L]`. All writes are
+  `channels[self][_]`, `vats[self].nextGiftId`, and `nextRefId`. The
+  resolver does not inspect `L`'s or `H`'s state.
+- **`ReceiveNetwork[desc:handoff-give chain-form]`** — actor: the
+  recipient `self`. Rebinds an existing
+  `vats[self].refs[targetRefId]` (its `localResolution` and
+  `embargo`), mints `vats[self].refs[pw]`, and appends
+  `op:withdraw-gift` on `channels[self][targetHost]`. Under
+  `"EJavaFlush"` with non-fresh `targetRefId`, also appends an
+  `op:e-flush-probe` on `channels[self][resolverPeer]` (the old
+  wire). All reads via `LocalRef(self, _)`; all writes
+  `vats[self].refs[_]` and `channels[self][_]`. The same flush
+  dispatch the import/export branch performs applies here — see
+  `../notes/flush-protocols.md` §7 "Chain-form `desc:handoff-give`
+  and the flush dispatch".
 
 ### Dynamic listener registration
 

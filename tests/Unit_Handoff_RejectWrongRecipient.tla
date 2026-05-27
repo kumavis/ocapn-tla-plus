@@ -26,6 +26,7 @@ NumMessages == 1
 EmptyInitialListeners == TRUE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
+EnableHandoffInitiate == TRUE
 RoutingPolicy == "NoPromiseResolution"
 DebugTrace == FALSE
 
@@ -94,6 +95,8 @@ PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
+WireDescriptorContract_MC == PS!WireDescriptorContract
+TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
 
 \* Behavioral check: at quiescence, gift slot is cleared (the legitimate
 \* withdraw from vatB succeeded) and the wrong-recipient withdraw never

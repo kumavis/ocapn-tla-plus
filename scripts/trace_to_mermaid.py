@@ -186,11 +186,11 @@ def summarize_msg(msg: str) -> str:
     if op == "op:resolve":
         target = _grp(r"targetRefId\s*\|\->\s*(\d+)", msg)
         desc = _grp(r'desc\s*\|\->\s*"([^"]*)"', msg)
-        if desc == "desc:remote-target":
+        if desc in ("desc:import-target", "desc:export-target",
+                    "desc:import-promise", "desc:export-promise"):
             return (
-                f'op:resolve(targetRefId={target}, desc:remote-target'
-                f'(peer={_grp(r"peer\s*\|\->\s*\"([^\"]*)\"", msg)}, '
-                f'refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)}))'
+                f'op:resolve(targetRefId={target}, {desc}'
+                f'(refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)}))'
             )
         if desc == "desc:handoff-give":
             return (

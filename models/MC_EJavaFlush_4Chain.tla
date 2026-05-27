@@ -21,12 +21,13 @@ EXTENDS TLC, Naturals, Sequences
 Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
 ChainLength == 4
-MaxRefId == ChainLength
+MaxGifts == 3
+MaxRefId == ChainLength + MaxGifts
 NumMessages == 3
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
-EnableHandoff == FALSE
-MaxGifts == 0
+EnableHandoff == TRUE
+EnableHandoffInitiate == FALSE
 RoutingPolicy == "EJavaFlush"
 
 CONSTANT DebugTrace  \* set in .cfg: FALSE for normal run, TRUE for _Debug.cfg
@@ -61,13 +62,15 @@ EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
+WireDescriptorContract_MC == PS!WireDescriptorContract
+TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
 
 \* Debug-only forced violation: see MC_EJavaFlush_3Chain.tla for the
-\* rationale; identical predicate.
+\* rationale; identical predicate, also scoped to chain refs only.
 NoSlowPathCompletion_MC ==
     ~( /\ Len(delivered) = NumMessages
-       /\ \E p \in Peers : \E r \in 1..MaxRefId :
-            /\ r \in {ri \in 1..MaxRefId : vats[p].refs[ri] # PS!EntryNone}
+       /\ \E p \in Peers : \E r \in 1..ChainLength :
+            /\ r \in {ri \in 1..ChainLength : vats[p].refs[ri] # PS!EntryNone}
             /\ vats[p].refs[r].kind = "RemotePromise"
             /\ vats[p].refs[r].localResolution # PS!ResNone
             /\ vats[p].refs[r].fresh = FALSE

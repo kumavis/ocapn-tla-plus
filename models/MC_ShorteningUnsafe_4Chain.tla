@@ -23,12 +23,13 @@ EXTENDS TLC, Naturals, Sequences
 Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
 ChainLength == 4
-MaxRefId == ChainLength
+MaxGifts == 3
+MaxRefId == ChainLength + MaxGifts
 NumMessages == 5
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
-EnableHandoff == FALSE
-MaxGifts == 0
+EnableHandoff == TRUE
+EnableHandoffInitiate == FALSE
 RoutingPolicy == "ShorteningUnsafe"
 DebugTrace == FALSE
 
@@ -58,5 +59,7 @@ EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
+WireDescriptorContract_MC == PS!WireDescriptorContract
+TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
 
 ============================================================================

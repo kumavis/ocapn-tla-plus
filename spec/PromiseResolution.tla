@@ -132,7 +132,8 @@ CONSTANT
     DebugTrace,
     EmptyInitialListeners,
     EnableDynamicListen,
-    EnableHandoff
+    EnableHandoff,
+    EnableHandoffInitiate
 
 ASSUME NumMessages \in Nat \ {0}
 ASSUME RoutingPolicy \in {
@@ -146,6 +147,7 @@ ASSUME DebugTrace \in BOOLEAN
 ASSUME EmptyInitialListeners \in BOOLEAN
 ASSUME EnableDynamicListen \in BOOLEAN
 ASSUME EnableHandoff \in BOOLEAN
+ASSUME EnableHandoffInitiate \in BOOLEAN
 
 ----------------------------------------------------------------------------
 (* Wire messages. *)
@@ -232,19 +234,24 @@ OpWithdrawGift(giftId, gifter, withdrawPromiseRefId) ==
      gifter |-> gifter,
      withdrawPromiseRefId |-> withdrawPromiseRefId]
 
-(* Resolution descriptor carried in op:resolve.value.
-   - desc:remote-target carries a plain (peer, refId) and is what the
-     listener installs as localResolution.
-   - desc:handoff-give is the opaque 3PHO introduction: gifter, targetHost,
-     and giftId; the recipient mints a withdraw-promise pw using its own
-     refId namespace, treats pw as a RemotePromise to targetHost, and learns
-     the actual ref only later when the target host's op:resolve carrying
-     desc:remote-target on pw arrives. *)
+(* Resolution descriptors carried in op:resolve.value.  "import" and
+   "export" are from the perspective of the message receiver (the peer
+   that processes the op:resolve).  A desc:import-* names a capability
+   hosted on the sender; desc:export-* names one hosted on the receiver.
+   desc:handoff-give is reserved for third-party introductions where the
+   capability host is neither sender nor receiver. *)
 
-DescRemoteTarget(peer, refId) ==
-    [desc |-> "desc:remote-target",
-     peer |-> peer,
-     refId |-> refId]
+DescImportTarget(refId) ==
+    [desc |-> "desc:import-target", refId |-> refId]
+
+DescExportTarget(refId) ==
+    [desc |-> "desc:export-target", refId |-> refId]
+
+DescImportPromise(refId) ==
+    [desc |-> "desc:import-promise", refId |-> refId]
+
+DescExportPromise(refId) ==
+    [desc |-> "desc:export-promise", refId |-> refId]
 
 (* pw is the new refId the gifter allocates for the recipient's withdraw-
    promise.  Carrying it inside the descriptor decouples it from
@@ -260,10 +267,76 @@ DescHandoffGive(gifter, targetHost, giftId, pw) ==
      giftId |-> giftId,
      pw |-> pw]
 
+TargetWireDescs ==
+    {"desc:import-target", "desc:export-target",
+     "desc:import-promise", "desc:export-promise"}
+
 DescValues ==
-    {DescRemoteTarget(p, r) : p \in Peers, r \in RefIds}
+    {DescImportTarget(r) : r \in RefIds}
+    \cup {DescExportTarget(r) : r \in RefIds}
+    \cup {DescImportPromise(r) : r \in RefIds}
+    \cup {DescExportPromise(r) : r \in RefIds}
     \cup {DescHandoffGive(g, h, i, w) :
             g \in Peers, h \in Peers, i \in GiftIds, w \in RefIds}
+
+(* Host peer and wire refId for a resolution value at the resolver. *)
+TargetHostPeer(resolver, res) ==
+    LET entry == LocalRef(resolver, res.refId)
+    IN IF entry.kind = "LocalTarget" THEN resolver ELSE entry.targetPeer
+
+TargetWireRefId(resolver, res) ==
+    LET entry == LocalRef(resolver, res.refId)
+    IN IF entry.kind = "LocalTarget" THEN res.refId ELSE entry.targetRefId
+
+TargetCapKind(resolver, res) ==
+    LocalRef(resolver, res.refId).kind
+
+(* Third-party introduction: capability host is neither sender nor receiver. *)
+NeedsHandoffIntro(sender, receiver, capHost) ==
+    capHost \notin {sender, receiver}
+
+(* Classify which descriptor tag applies (pure; for tests and docs). *)
+WireDescTag(sender, receiver, capHost, capKind) ==
+    IF NeedsHandoffIntro(sender, receiver, capHost)
+    THEN "handoff-give"
+    ELSE IF capKind \in {"LocalTarget", "RemoteTarget"}
+         THEN IF capHost = receiver THEN "export-target" ELSE "import-target"
+         ELSE IF capHost = receiver THEN "export-promise" ELSE "import-promise"
+
+(* Build the op:resolve value for a two-party target introduction. *)
+ResolveValueFor(resolver, res, listener) ==
+    LET capHost == TargetHostPeer(resolver, res)
+        refId == TargetWireRefId(resolver, res)
+        capKind == TargetCapKind(resolver, res)
+        tag == WireDescTag(resolver, listener, capHost, capKind)
+    IN CASE tag = "export-target" -> DescExportTarget(refId)
+         [] tag = "import-target" -> DescImportTarget(refId)
+         [] tag = "export-promise" -> DescExportPromise(refId)
+         [] tag = "import-promise" -> DescImportPromise(refId)
+         [] OTHER -> DescImportTarget(refId)
+
+(* Map a received descriptor to the ResRef a holder installs. *)
+DescToResRef(receiver, sender, desc) ==
+    CASE desc.desc = "desc:import-target" -> ResRef(sender, desc.refId)
+      [] desc.desc = "desc:export-target" -> ResRef(receiver, desc.refId)
+      [] desc.desc = "desc:import-promise" -> ResRef(sender, desc.refId)
+      [] desc.desc = "desc:export-promise" -> ResRef(receiver, desc.refId)
+      [] OTHER -> ResNone
+
+(* True when `desc` is the correct wire shape for introducing `capHost`'s
+   ref from `sender` to `receiver`.  Used by unit-test invariants. *)
+WireDescMatches(sender, receiver, capHost, capKind, desc) ==
+    IF NeedsHandoffIntro(sender, receiver, capHost)
+    THEN desc.desc = "desc:handoff-give"
+    ELSE IF capKind \in {"LocalTarget", "RemoteTarget"}
+         THEN /\ desc.desc =
+                  IF capHost = receiver
+                  THEN "desc:export-target" ELSE "desc:import-target"
+              /\ desc.refId \in RefIds
+         ELSE /\ desc.desc =
+                  IF capHost = receiver
+                  THEN "desc:export-promise" ELSE "desc:import-promise"
+              /\ desc.refId \in RefIds
 
 Messages ==
     { OpDeliverOnly(HeadPeer, 1, n, r) :
@@ -388,14 +461,14 @@ Route(self, r) ==
 
    Mechanism in this spec
    ----------------------
-   When subscriber L receives op:resolve(r, desc:remote-target(p,r')) on
-   a RemotePromise vats[L].refs[r]:
+   When subscriber L receives op:resolve(r, desc:import-target(r')) or
+   desc:export-target(r') on a RemotePromise vats[L].refs[r]:
 
    FAST PATH (no flush) -- locally decidable at L, no remote read:
-     fastPath := LocalRef(L,r).fresh \/ msg.value.peer = LocalRef(L,r).resolverPeer
-     If fastPath, set localResolution = ResRef(p, r'); embargo stays
-     FALSE.  Subsequent sends route directly through the installed
-     localResolution via the normal Route recursion.
+     fastPath := LocalRef(L,r).fresh \/ sameConn
+     If fastPath, set localResolution = DescToResRef(L, from, msg.value);
+     embargo stays FALSE.  Subsequent sends route directly through the
+     installed localResolution via the normal Route recursion.
 
        - `fresh` (per-RemotePromise sticky bit defined in
          lib/References.tla; mirrors e-on-java's isFresh [1]): TRUE
@@ -407,16 +480,16 @@ Route(self, r) ==
          the e-on-java semantic from the strictly-weaker "is anything
          currently in my outbox" heuristic.
        - `sameConnection`: the new target is in the same vat as the
-         current resolver.  Any new send arrives behind prior sends by
-         p2p FIFO on that single wire, so no flush is needed (e-on-java
-         [3]; DeepFrozen target is out of scope for this spec).
+         current resolver (desc is import-* and sender = resolverPeer).
+         Any new send arrives behind prior sends by p2p FIFO on that
+         single wire, so no flush is needed (e-on-java [3]).
 
    SLOW PATH (downstream flush + ack) -- L sends one protocol message,
    awaits one protocol message:
      embargoInstead := EJavaFlush /\ ~fastPath /\ ~isHandoffPw
-     If embargoInstead: set localResolution = ResRef(p, r') (staged);
-     set embargo = TRUE; append OpEFlushProbe(L, r, resolverRefId) to
-     L's own outbox channels[L][resolverPeer].
+     If embargoInstead: set localResolution = DescToResRef(L, from,
+     msg.value) (staged); set embargo = TRUE; append OpEFlushProbe(L, r,
+     resolverRefId) to L's own outbox channels[L][resolverPeer].
 
      The probe rides the same wire as previously-pipelined deliver-only
      sends and is re-forwarded by every intermediate hop exactly like a
@@ -679,20 +752,46 @@ ChainResolutionFor(r) ==
     IF r >= TerminalPos THEN ResNone
     ELSE ResRef(host[r + 1], r + 1)
 
-(* IsResolutionTarget / ResolveValueFor: pure functions over `self`'s
-   own ref table.  Both look up res.refId via LocalRef(self, _) --
-   locality: own state only. *)
+(* IsResolutionTarget: pure function over `self`'s own ref table. *)
 IsResolutionTarget(self, res) ==
     /\ res # ResNone
     /\ res.refId \in DOMrefs(self)
     /\ LocalRef(self, res.refId).kind \in {"LocalTarget", "RemoteTarget"}
 
-ResolveValueFor(self, res) ==
-    LET targetEntry == LocalRef(self, res.refId)
-    IN IF targetEntry.kind = "LocalTarget"
-       THEN DescRemoteTarget(self, res.refId)
-       ELSE \* RemoteTarget
-            DescRemoteTarget(targetEntry.targetPeer, targetEntry.targetRefId)
+(* Fold listener notifications into outboxes.  Two-party resolutions carry
+   import/export descriptors; third-party resolutions emit deposit-gift +
+   desc:handoff-give (one gift per listener).  Locality: only appends on
+   channels[resolver][_]. *)
+RECURSIVE AppendResolveNotifications(_, _, _, _, _, _, _)
+AppendResolveNotifications(ch, resolver, promiseRefId, res, listeners,
+                            gidAcc, pwAcc) ==
+    IF listeners = {}
+    THEN [channels |-> ch, gidNext |-> gidAcc, pwNext |-> pwAcc]
+    ELSE LET listener == CHOOSE l \in listeners : TRUE
+             capHost == TargetHostPeer(resolver, res)
+             wireRefId == TargetWireRefId(resolver, res)
+             rest == listeners \ {listener}
+         IN IF NeedsHandoffIntro(resolver, listener, capHost)
+            THEN LET gid == gidAcc
+                     pw == pwAcc
+                     ch1 ==
+                         AppendToOutbox(ch, resolver, capHost,
+                             OpDepositGift(gid, listener, wireRefId, pw))
+                     ch2 ==
+                         AppendToOutbox(ch1, resolver, listener,
+                             OpResolve(promiseRefId,
+                                 DescHandoffGive(resolver, capHost, gid, pw)))
+                 IN AppendResolveNotifications(ch2, resolver, promiseRefId,
+                     res, rest, gid + 1, pw + 1)
+            ELSE LET value == ResolveValueFor(resolver, res, listener)
+                     chN ==
+                         AppendToOutbox(ch, resolver, listener,
+                             OpResolve(promiseRefId, value))
+                 IN AppendResolveNotifications(chN, resolver, promiseRefId,
+                     res, rest, gidAcc, pwAcc)
+
+ListenersNotifyable(resolver, res, listeners) ==
+    listeners # {}
 
 (* Append `msg` to channels[self][q] for each q in `qs`.  Locality: the
    acting peer `self` only mutates its own outbox; `qs` is the actor's
@@ -728,18 +827,26 @@ ResolverResolve ==
                    /\ isTarget
                    /\ listeners # {}
                    /\ RoutingPolicy = "OpFlushProtocol"
-               value ==
-                   IF isTarget THEN ResolveValueFor(self, res) ELSE ResNone
+               needsHandoff ==
+                   isTarget
+                   /\ \E l \in listeners :
+                        NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
+               notify ==
+                   AppendResolveNotifications(channels, self, r, res,
+                       listeners, LocalNextGiftId(self), nextRefId)
            IN
               /\ res # ResNone
               /\ (CASE fireOpResolveNow
-                       -> /\ vats' =
+                       -> /\ ListenersNotifyable(self, res, listeners)
+                          /\ vats' =
                               [vats EXCEPT
                                   ![self].refs[r].resolution = res,
-                                  ![self].refs[r].notified = TRUE]
-                          /\ channels' =
-                              AppendToManyOutboxes(channels, self, listeners,
-                                  OpResolve(r, value))
+                                  ![self].refs[r].notified = TRUE,
+                                  ![self].nextGiftId = notify.gidNext]
+                          /\ channels' = notify.channels
+                          /\ IF needsHandoff
+                             THEN nextRefId' = notify.pwNext
+                             ELSE UNCHANGED nextRefId
                    [] fireOpFlush
                        -> /\ vats' =
                               [vats EXCEPT
@@ -753,7 +860,8 @@ ResolverResolve ==
                               [vats EXCEPT ![self].refs[r].resolution = res]
                           /\ UNCHANGED channels)
               /\ UNCHANGED << host, sent, delivered >>
-              /\ HandoffVarsUnchanged
+              /\ IF ~fireOpResolveNow \/ ~needsHandoff THEN HandoffVarsUnchanged
+                 ELSE TRUE
               /\ Mark([name |-> "ResolverResolve",
                        actor |-> self,
                        refId |-> r,
@@ -863,16 +971,24 @@ SendOpResolveAfterFlush ==
         /\ Len(LocalRef(self, r).queue) = 0
         /\ LET entry == LocalRef(self, r)
                res == entry.resolution
-               value == ResolveValueFor(self, res)
                listeners == entry.listeners
+               needsHandoff ==
+                   \E l \in listeners :
+                       NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
+               notify ==
+                   AppendResolveNotifications(channels, self, r, res,
+                       listeners, LocalNextGiftId(self), nextRefId)
            IN
+              /\ ListenersNotifyable(self, res, listeners)
               /\ vats' =
-                   [vats EXCEPT ![self].refs[r].notified = TRUE]
-              /\ channels' =
-                   AppendToManyOutboxes(channels, self, listeners,
-                       OpResolve(r, value))
+                   [vats EXCEPT
+                       ![self].refs[r].notified = TRUE,
+                       ![self].nextGiftId = notify.gidNext]
+              /\ channels' = notify.channels
+              /\ IF needsHandoff
+                 THEN nextRefId' = notify.pwNext
+                 ELSE UNCHANGED nextRefId
               /\ UNCHANGED << host, sent, delivered >>
-              /\ HandoffVarsUnchanged
               /\ Mark([name |-> "SendOpResolveAfterFlush",
                        actor |-> self,
                        refId |-> r])
@@ -999,7 +1115,7 @@ ReceiveNetwork ==
                             [] OTHER -> FALSE)
                        /\ UNCHANGED << host, sent >>
                        /\ HandoffVarsUnchanged
-              \/ \* op:resolve carrying desc:remote-target.
+              \/ \* op:resolve carrying import/export target descriptors.
                  \*
                  \* Under EJavaFlush this dispatches to one of two paths
                  \* (faithful to e-on-java's DelayedRedirector.run):
@@ -1008,10 +1124,9 @@ ReceiveNetwork ==
                  \*     OR sameConnection(newTarget, current resolver).
                  \*     `fresh` is the local sticky bit asserting no
                  \*     message has ever been pipelined through this
-                 \*     RemotePromise; `sameConnection` is the local check
-                 \*     that the new target is in the same vat as the
-                 \*     current resolver (so any new send arrives behind
-                 \*     prior sends by p2p FIFO on that single wire).
+                 \*     RemotePromise; `sameConnection` holds when the
+                 \*     descriptor is import-* and the sender is the
+                 \*     current resolverPeer (target hosted on sender).
                  \*     Either is sufficient to skip the flush; both are
                  \*     locally observable at `self` without any global
                  \*     state.
@@ -1029,18 +1144,20 @@ ReceiveNetwork ==
                  \*     prior sends have been delivered there.  No peer
                  \*     reads a remote channel or another peer's refs.
                  /\ msg.op = "op:resolve"
-                 /\ msg.value.desc = "desc:remote-target"
+                 /\ msg.value.desc \in TargetWireDescs
                  /\ LET r == msg.targetRefId
                         v == msg.value
                         entry == LocalRef(self, r)
-                        newLocalRes == ResRef(v.peer, v.refId)
+                        newLocalRes == DescToResRef(self, from, v)
                         \* EJavaFlush fast-path predicates.  Both are
                         \* purely local at `self`.
                         isFreshHere ==
                             entry.kind = "RemotePromise" /\ entry.fresh
                         sameConn ==
                             entry.kind = "RemotePromise"
-                            /\ v.peer = entry.resolverPeer
+                            /\ v.desc \in {"desc:import-target",
+                                           "desc:import-promise"}
+                            /\ from = entry.resolverPeer
                         fastPath == isFreshHere \/ sameConn
                         \* Handoff withdraw-promise responses (refId allocated
                         \* by HandoffInitiate above ChainLength) always
@@ -1120,6 +1237,46 @@ ReceiveNetwork ==
                  \* changes, and no op:withdraw-gift is emitted to the
                  \* target host (since the handoff at this recipient
                  \* never took effect).
+                 \*
+                 \* CHAIN-FORM RACE under flush protocols.  Receiving
+                 \* a chain-form desc:handoff-give rebinds
+                 \* vats[self].refs[targetRefId].localResolution from
+                 \* ResNone to ResRef(self, pw).  Future sends through
+                 \* targetRefId now take the NEW direct route to tgtHost
+                 \* via pw, while in-flight pipelined sends on the OLD
+                 \* route (channels[self][resolverPeer] and downstream)
+                 \* may not yet have reached tgtHost.  This is the
+                 \* identical race that desc:import-target/desc:export-
+                 \* target faces, and it must be guarded by the same
+                 \* flush dispatch:
+                 \*
+                 \*   EJavaFlush.  Apply the subscriber-side fast/slow
+                 \*   dispatch on vats[self].refs[targetRefId]:
+                 \*     - fastPath when targetRefId is `fresh`
+                 \*       (nothing was ever pipelined through it) --
+                 \*       install immediately.  sameConnection cannot
+                 \*       apply: tgtHost is by construction a third
+                 \*       peer (NeedsHandoffIntro held at the gifter).
+                 \*     - else slow path: set embargo on
+                 \*       vats[self].refs[targetRefId] AND emit
+                 \*       op:e-flush-probe on the OLD wire
+                 \*       channels[self][resolverPeer].  The probe
+                 \*       queues behind any in-flight forwards and the
+                 \*       ack returns only after they reach the
+                 \*       eventual target.  ProcessHold then drains
+                 \*       vats[self].refs[targetRefId].pending through
+                 \*       the (now committed) localResolution = pw,
+                 \*       which Route follows to a direct wire to
+                 \*       tgtHost.
+                 \*
+                 \*   OpFlushProtocol.  The op:resolve from the
+                 \*   resolver is itself the post-flush notification:
+                 \*   listener `self` had already set embargo on
+                 \*   refs[targetRefId] when it processed op:flush, and
+                 \*   the resolver has since performed the
+                 \*   resolver-initiated op:e-flush-probe roundtrip
+                 \*   through tgtHost.  Clear the embargo so
+                 \*   ProcessHold can drain pending through the new pw.
                  /\ msg.op = "op:resolve"
                  /\ msg.value.desc = "desc:handoff-give"
                  /\ EnableHandoff
@@ -1138,6 +1295,20 @@ ReceiveNetwork ==
                         accept ==
                             /\ pwFree
                             /\ (isChain => chainBindable)
+                        chainEntry ==
+                            IF isChain /\ chainBindable
+                            THEN LocalRef(self, targetRefId) ELSE EntryNone
+                        chainFresh ==
+                            /\ isChain
+                            /\ chainBindable
+                            /\ chainEntry.fresh
+                        chainEmbargo ==
+                            /\ isChain
+                            /\ RoutingPolicy = "EJavaFlush"
+                            /\ ~chainFresh
+                        chainProbe ==
+                            OpEFlushProbe(self, targetRefId,
+                                          chainEntry.resolverRefId)
                     IN
                        /\ (CASE accept /\ isChain
                                 -> /\ vats' =
@@ -1147,10 +1318,29 @@ ReceiveNetwork ==
                                                     ResNone, FALSE,
                                                     << >>, TRUE, TRUE),
                                             ![self].refs[targetRefId].localResolution =
-                                                ResRef(self, pw)]
+                                                ResRef(self, pw),
+                                            \* EJavaFlush slow path sets
+                                            \* embargo; OpFlushProtocol clears
+                                            \* the embargo previously set by
+                                            \* op:flush; other policies leave
+                                            \* it at its existing (FALSE)
+                                            \* value.
+                                            ![self].refs[targetRefId].embargo =
+                                                IF chainEmbargo THEN TRUE
+                                                ELSE IF RoutingPolicy =
+                                                          "OpFlushProtocol"
+                                                     THEN FALSE
+                                                     ELSE chainEntry.embargo]
                                    /\ channels' =
-                                        AppendToOutbox(ch0, self, tgtHost,
-                                            OpWithdrawGift(gid, gifter, pw))
+                                        LET ch1 == AppendToOutbox(ch0, self,
+                                                       tgtHost,
+                                                       OpWithdrawGift(gid,
+                                                           gifter, pw))
+                                        IN IF chainEmbargo
+                                           THEN AppendToOutbox(ch1, self,
+                                                    chainEntry.resolverPeer,
+                                                    chainProbe)
+                                           ELSE ch1
                             [] accept /\ ~isChain
                                 -> /\ vats' =
                                         [vats EXCEPT
@@ -1178,7 +1368,8 @@ ReceiveNetwork ==
                                 targetHost |-> tgtHost,
                                 giftId |-> gid,
                                 chain |-> isChain,
-                                accepted |-> accept])
+                                accepted |-> accept,
+                                embargoed |-> chainEmbargo])
               \/ \* op:flush  (OpFlushProtocol only).  Listener `self`
                  \* sets embargo on its RemotePromise AND immediately
                  \* enqueues op:flush-ack on its own outbox back to the
@@ -1322,7 +1513,7 @@ ReceiveNetwork ==
                                 -> \* Subscribe-to-already-resolved with a
                                    \* terminal value: immediate op:resolve reply.
                                    \* Listener is also recorded for bookkeeping.
-                                   LET value == ResolveValueFor(self, res)
+                                   LET value == ResolveValueFor(self, res, from)
                                    IN /\ vats' =
                                            [vats EXCEPT
                                                ![self].refs[r].listeners = @ \cup {from},
@@ -1386,7 +1577,7 @@ ReceiveNetwork ==
               \/ \* op:withdraw-gift (target host = self).  Two outcomes:
                  \*   (1) entry present and recipient matches: resolve the
                  \*       pre-minted LocalPromise(pw) to T_local, send
-                 \*       op:resolve(pw, desc:remote-target), clear the gift.
+                 \*       op:resolve(pw, desc:import-target), clear the gift.
                  \*   (2) entry present but recipient mismatch: silently drop
                  \*       (wrong-recipient rejection; gift stays intact for
                  \*       the legitimate recipient).
@@ -1408,7 +1599,7 @@ ReceiveNetwork ==
                             /\ depositSeen
                             /\ entry.recipient = from
                         tlr == IF recipientOK THEN entry.targetLocalRefId ELSE 0
-                        resVal == DescRemoteTarget(self, tlr)
+                        resVal == DescImportTarget(tlr)
                     IN
                        /\ depositSeen
                        /\ (CASE recipientOK
@@ -1538,6 +1729,7 @@ HandoffInitiate ==
                   LocalRef(self, r).kind \in
                       {"LocalPromise", "RemotePromise"}} :
             /\ EnableHandoff
+            /\ EnableHandoffInitiate
             /\ self # recipient
             /\ LocalRef(self, srcRef).kind = "RemoteTarget"
             /\ LET srcEntry == LocalRef(self, srcRef)
@@ -1640,6 +1832,26 @@ NoMessageLost ==
 
 EventualDelivery ==
     <>(Len(delivered) = NumMessages)
+
+----------------------------------------------------------------------------
+(* Wire descriptor contract: desc:handoff-give only for third-party refs;
+   two-party introductions use import/export descriptors. *)
+
+WireDescriptorContract ==
+    \A sender, receiver \in Peers :
+        \A i \in 1..Len(channels[sender][receiver]) :
+            LET msg == channels[sender][receiver][i]
+            IN (msg.op # "op:resolve") \/
+               (msg.value.desc # "desc:handoff-give") \/
+               msg.value.targetHost \notin {sender, receiver}
+
+TwoPartyWireDescsOnly ==
+    \A sender, receiver \in Peers :
+        \A i \in 1..Len(channels[sender][receiver]) :
+            LET msg == channels[sender][receiver][i]
+            IN (msg.op # "op:resolve") \/
+               (msg.value.desc = "desc:handoff-give") \/
+               msg.value.desc \in TargetWireDescs
 
 ----------------------------------------------------------------------------
 (* Gift-table invariants.                                                   *)

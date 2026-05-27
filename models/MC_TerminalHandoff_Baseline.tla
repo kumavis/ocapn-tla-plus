@@ -20,10 +20,11 @@
 (*   3. vatB processes op:resolve(handoff-give) -> mints RemotePromise pw *)
 (*      and sends op:withdraw-gift(1, vatA, pw) to vatC.                  *)
 (*   4. vatC processes op:withdraw-gift -> mints LocalPromise pw, resolves*)
-(*      it to LocalTarget r_T_local, sends op:resolve(pw, desc:remote-    *)
-(*      target(vatC, 2)) to vatB, clears gift.                            *)
-(*   5. vatB processes op:resolve(remote-target) -> installs              *)
-(*      localResolution = RemoteTarget(vatC, 2) on the pw entry.          *)
+(*      it to LocalTarget r_T_local, sends op:resolve(pw, desc:import-    *)
+(*      target(2)) to vatB, clears gift.  (DescImportTarget takes only   *)
+(*      a refId; the host is implicit as the sender vatC.)                *)
+(*   5. vatB processes op:resolve(import-target) -> installs              *)
+(*      localResolution = ResRef(vatC, 2) on the pw entry.                *)
 (*                                                                         *)
 (* Invariants checked:                                                     *)
 (*   EndToEndRefFIFO, NoMessageLost, PairingInvariant, GiftOneShot,       *)
@@ -41,6 +42,7 @@ NumMessages == 1
 EmptyInitialListeners == TRUE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
+EnableHandoffInitiate == TRUE
 RoutingPolicy == "NoPromiseResolution"
 DebugTrace == FALSE
 
@@ -72,4 +74,6 @@ NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
+WireDescriptorContract_MC == PS!WireDescriptorContract
+TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
 ============================================================================
