@@ -4,14 +4,15 @@
 (* withdraw a gift.                                                        *)
 (*                                                                         *)
 (* Adversarial Init:                                                       *)
-(*   - gifts[vatC][vatA][1] = (recipient = vatB, targetLocalRefId = 2)    *)
+(*   - vats[vatC].gifts[vatA][1] = (recipient = vatB,                     *)
+(*                                  targetLocalRefId = 2)                 *)
 (*   - channels[vatX][vatC] = << op:withdraw-gift(1, vatA, 3) >>          *)
 (*     where vatX = "vatD" is NOT the named recipient                     *)
 (*                                                                         *)
 (* Expected: vatC silently rejects the withdraw (channel drained, no new  *)
-(* LocalPromise at refs[vatC][3], gift entry unchanged).  When vatB later *)
-(* sends a legitimate withdraw, vatC accepts it.  GiftHasOneRecipient and *)
-(* GiftOneShot hold throughout.                                            *)
+(* LocalPromise at vats[vatC].refs[3], gift entry unchanged).  When vatB *)
+(* later sends a legitimate withdraw, vatC accepts it.                    *)
+(* GiftHasOneRecipient and GiftOneShot hold throughout.                   *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -31,37 +32,45 @@ DebugTrace == FALSE
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered,
-           gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 
 Init ==
     /\ host = <<"vatA", "vatC">>
-    /\ refs = [p \in Peers |->
-                 [r \in (1..MaxRefId) |->
-                    CASE p = "vatA" /\ r = 1 ->
-                            PS!MkLocalPromise(<< >>, {},
-                                PS!ResNone, {}, FALSE, "idle")
-                      [] p = "vatA" /\ r = 2 ->
+    /\ vats =
+         [p \in Peers |->
+            [refs |->
+               [r \in (1..MaxRefId) |->
+                  CASE p = "vatA" /\ r = 1 ->
+                          PS!MkLocalPromise(<< >>, {},
+                              PS!ResNone, {}, FALSE, "idle")
+                    [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
-                      [] p = "vatB" /\ r = 3 ->
+                    [] p = "vatB" /\ r = 3 ->
                             PS!MkRemotePromise("vatC", 3, PS!ResNone,
                                 FALSE, << >>, TRUE, TRUE)
-                      [] p = "vatC" /\ r = 2 ->
+                    [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalTarget
-                      [] p = "vatC" /\ r = 3 ->
+                    [] p = "vatC" /\ r = 3 ->
                             PS!MkLocalPromise(<< >>, {"vatB"},
                                 PS!ResNone, {}, FALSE, "idle")
-                      [] OTHER -> PS!EntryNone]]
+                    [] OTHER -> PS!EntryNone],
+             gifts |->
+               [q \in Peers |->
+                  [i \in 1..MaxGifts |->
+                     IF p = "vatC" /\ q = "vatA" /\ i = 1
+                     THEN [kind |-> "gift",
+                           recipient |-> "vatB",
+                           targetLocalRefId |-> 2]
+                     ELSE PS!NoGift]],
+             nextGiftId |-> IF p = "vatA" THEN 2 ELSE 1]]
     /\ channels =
          [p \in Peers |->
             [q \in Peers |->
@@ -72,15 +81,6 @@ Init ==
                  [] OTHER -> << >>]]
     /\ sent = 0
     /\ delivered = << >>
-    /\ gifts = [p \in Peers |->
-                  [q \in Peers |->
-                     [i \in 1..MaxGifts |->
-                        IF p = "vatC" /\ q = "vatA" /\ i = 1
-                        THEN [kind |-> "gift",
-                              recipient |-> "vatB",
-                              targetLocalRefId |-> 2]
-                        ELSE PS!NoGift]]]
-    /\ nextGiftId = [p \in Peers |-> IF p = "vatA" THEN 2 ELSE 1]
     /\ nextRefId = ChainLength + 1 + 1
     /\ lastAction = [name |-> "init"]
 
@@ -100,5 +100,5 @@ GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 \* did damage.
 GiftEventuallyCleared ==
     [] (   (\A p, q \in Peers : Len(channels[p][q]) = 0)
-        => gifts["vatC"]["vatA"][1] = PS!NoGift )
+        => vats["vatC"].gifts["vatA"][1] = PS!NoGift )
 ============================================================================

@@ -5,8 +5,19 @@
 (*   Promise          = LocalPromise | RemotePromise                       *)
 (*   Target           = LocalTarget | RemoteTarget                         *)
 (*                                                                         *)
-(* Per-peer state: refs[p][r] is the entry for refId r on peer p, OR the   *)
-(* sentinel EntryNone for unallocated slots.                               *)
+(* All per-peer state lives in a single `vats[p]` record declared in     *)
+(* lib/PeerState.tla, so every per-peer write structurally takes the form *)
+(*   vats' = [vats EXCEPT ![self].refs[r]... = ...]                       *)
+(* and a reviewer can grep `[vats EXCEPT !\[` to verify every site keys   *)
+(* on `self`.  See ../notes/locality-contract.md section 7 for the full   *)
+(* locality contract that this shape enforces.                            *)
+(*                                                                         *)
+(* This module owns the Reference taxonomy types and constructors, the    *)
+(* immutable chain-topology VARIABLE `host`, and the MkChainRefs           *)
+(* constructor used by Init to lay down the initial refs slice of vats.   *)
+(*                                                                         *)
+(* Per-peer accessors (LocalRef, LocalRefs, ...) and PairingInvariant     *)
+(* live in lib/PeerState.tla, where the `vats` VARIABLE is in scope.      *)
 (*                                                                         *)
 (* v0 globally-shared refIds: a single integer r identifies the same       *)
 (* logical capability everywhere it appears.  For the pinned chain shape   *)
@@ -60,7 +71,7 @@ ResRef(peer, refId) ==
    target-flush probe + ack roundtrip.  Tristate:
      "idle"    -- no probe sent (initial state, and the steady state
                   under any policy other than OpFlushProtocol).
-     "out"     -- probe sent on channels[resolver][target], awaiting
+     "out"     -- probe sent on the resolver's outbox to target, awaiting
                   op:e-flush-probe-ack.  SendTargetFlushProbe transitions
                   "idle" -> "out" exactly once per promise resolution.
      "acked"   -- ack received.  SendOpResolveAfterFlush requires this.
@@ -102,8 +113,7 @@ MkRemotePromise(resolverPeer, resolverRefId, localResolution,
 (* Used by MCs to pin chain shape; the spec also uses it for routing.     *)
 
 VARIABLES
-    host,    \* [ChainRefs -> Peers]
-    refs     \* [Peers -> [RefIds -> Entry]]
+    host    \* [ChainRefs -> Peers]
 
 (* Resolution type (kind, peer?, refId?). *)
 ResolutionType ==
@@ -132,64 +142,11 @@ RefEntryType(Messages) ==
           listenSent: BOOLEAN,
           fresh: BOOLEAN]
 
-(* Domain of allocated entries on peer p. *)
-DOMrefs(p) == {r \in RefIds : refs[p][r] # EntryNone}
-
-----------------------------------------------------------------------------
-(* Per-actor locality accessors.  Every protocol action in
-   spec/PromiseResolution.tla is required to read its own ref table only;
-   these accessors give a name to the locality-respecting access pattern so
-   a reviewer can grep for direct refs[X][Y] indexing and confirm every
-   such site is either inside an accessor definition here or inside a
-   tightly-scoped EXCEPT update.  See ../notes/locality-contract.md.
-
-   `self` is the bound actor; passing any other peer in this slot is by
-   convention a locality violation and should be justified inline. *)
-
-LocalRefs(self)          == refs[self]
-LocalRef(self, r)        == refs[self][r]
-LocalRefAllocated(self, r) == refs[self][r] # EntryNone
-
-(* EXCEPT-wrappers that thread `self` through the update.  These do not
-   change the underlying semantics (TLA+ requires EXCEPT to be inlined at
-   the call site for field updates), but they give a single place where
-   a reviewer can verify that all in-place writes are scoped to the
-   actor's own slice. *)
-SetLocalRef(refs0, self, r, entry) ==
-    [refs0 EXCEPT ![self][r] = entry]
-
-----------------------------------------------------------------------------
-(* PairingInvariant: every RemoteX has a matching LocalX on its target.  *)
-
-PairingInvariant ==
-    /\ \A p \in Peers : \A r \in DOMrefs(p) :
-         refs[p][r].kind = "RemoteTarget" =>
-            LET q == refs[p][r].targetPeer
-                rq == refs[p][r].targetRefId
-            IN /\ rq \in DOMrefs(q)
-               /\ refs[q][rq].kind = "LocalTarget"
-    /\ \A p \in Peers : \A r \in DOMrefs(p) :
-         refs[p][r].kind = "RemotePromise" =>
-            LET q == refs[p][r].resolverPeer
-                rq == refs[p][r].resolverRefId
-                \* A handoff withdraw-promise is keyed by the resolver-side
-                \* refId, which is allocated above ChainLength by
-                \* HandoffInitiate's nextRefId.  The holder-side refId (r) may
-                \* be a chain ref (1..ChainLength) when the recipient binds
-                \* the handoff onto an existing forwarder, so we cannot key
-                \* the relaxation on r.
-                isHandoffPromise == rq > ChainLength
-            IN \/ /\ isHandoffPromise
-                  /\ rq \notin DOMrefs(q)  \* transitional: target host has
-                                            \* not yet pre-minted the LocalPromise
-                                            \* (will happen on op:deposit-gift).
-               \/ /\ rq \in DOMrefs(q)
-                  /\ refs[q][rq].kind = "LocalPromise"
-
 ----------------------------------------------------------------------------
 (* Chain-refs constructor: given a host function and a listeners function,  *)
-(* build the pinned-chain refs table.  Used by the spec module to assemble  *)
-(* Init in a policy-aware way.                                              *)
+(* build the pinned-chain refs table -- the `refs` slice of a freshly       *)
+(* initialised vat.  Used by PromiseResolutionInit to assemble vats in a    *)
+(* policy-aware way.                                                        *)
 
 MkChainRefs(h, listenersFn) ==
     [p \in Peers |->

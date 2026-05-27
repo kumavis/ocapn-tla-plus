@@ -34,15 +34,13 @@ CONSTANT DebugTrace  \* set in .cfg: FALSE for normal run, TRUE for _Debug.cfg
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 
@@ -77,11 +75,11 @@ EventualDelivery_MC == PS!EventualDelivery
 NoSlowPathCompletion_MC ==
     ~( /\ Len(delivered) = NumMessages
        /\ \E p \in Peers : \E r \in 1..MaxRefId :
-            /\ r \in {ri \in 1..MaxRefId : refs[p][ri] # PS!EntryNone}
-            /\ refs[p][r].kind = "LocalPromise"
-            /\ refs[p][r].resolution # PS!ResNone
-            /\ refs[p][r].flushPhase = "acked"
-            /\ refs[p][r].notified
-            /\ refs[p][r].flushPending = {} )
+            /\ r \in {ri \in 1..MaxRefId : vats[p].refs[ri] # PS!EntryNone}
+            /\ vats[p].refs[r].kind = "LocalPromise"
+            /\ vats[p].refs[r].resolution # PS!ResNone
+            /\ vats[p].refs[r].flushPhase = "acked"
+            /\ vats[p].refs[r].notified
+            /\ vats[p].refs[r].flushPending = {} )
 
 ============================================================================

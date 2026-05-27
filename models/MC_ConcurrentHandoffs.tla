@@ -34,36 +34,35 @@ DebugTrace == FALSE
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered,
-           gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 
 Init ==
     /\ host = <<"vatC", "vatC">>
-    /\ refs = [p \in Peers |->
-                 [r \in (1..MaxRefId) |->
-                    CASE p = "vatA" /\ r = 1 ->
+    /\ vats =
+         [p \in Peers |->
+            [refs |->
+               [r \in (1..MaxRefId) |->
+                  CASE p = "vatA" /\ r = 1 ->
+                          PS!MkRemoteTarget("vatC", 1)
+                    [] p = "vatB" /\ r = 1 ->
                             PS!MkRemoteTarget("vatC", 1)
-                      [] p = "vatB" /\ r = 1 ->
-                            PS!MkRemoteTarget("vatC", 1)
-                      [] p = "vatC" /\ r = 1 ->
+                    [] p = "vatC" /\ r = 1 ->
                             PS!MkLocalTarget
-                      [] OTHER -> PS!EntryNone]]
+                    [] OTHER -> PS!EntryNone],
+             gifts |->
+               [q \in Peers |-> [i \in 1..MaxGifts |-> PS!NoGift]],
+             nextGiftId |-> 1]]
     /\ channels = [p \in Peers |-> [q \in Peers |-> << >>]]
     /\ sent = 0
     /\ delivered = << >>
-    /\ gifts = [p \in Peers |-> [q \in Peers |-> [i \in 1..MaxGifts |->
-                  PS!NoGift]]]
-    /\ nextGiftId = [p \in Peers |-> 1]
     /\ nextRefId = ChainLength + 1
     /\ lastAction = [name |-> "init"]
 

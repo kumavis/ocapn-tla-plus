@@ -19,20 +19,21 @@
 (*   channels[vatB][vatC] = << op:deliver-only(sender=vatA, sentOnRef=1,   *)
 (*                                              seq=1, refId=2) >>         *)
 (*       -- the pipelined forward sits on vatB's wire to its resolver.     *)
-(*          Because vatB has pipelined through refs[vatB][2], the          *)
-(*          per-ref sticky bit refs[vatB][2].fresh is FALSE in Init.       *)
+(*          Because vatB has pipelined through vats[vatB].refs[2], the    *)
+(*          per-ref sticky bit vats[vatB].refs[2].fresh is FALSE in Init. *)
 (*   channels[vatC][vatB] = << op:resolve(targetRefId=2,                   *)
 (*                                         desc:remote-target(vatA, 3)) >> *)
 (*       -- vatC notifying its listener vatB that p2 resolves to T@vatA.   *)
 (*                                                                         *)
 (* From this Init the receive of op:resolve at vatB is enabled.  Under     *)
 (* faithful EJavaFlush, vatB consults:                                     *)
-(*   - refs[vatB][2].fresh = FALSE (the sticky bit was cleared when vatB   *)
-(*     pipelined the seq=1 forward).                                       *)
-(*   - sameConnection: vatA = refs[vatB][2].resolverPeer = vatC? FALSE.    *)
+(*   - vats[vatB].refs[2].fresh = FALSE (the sticky bit was cleared when  *)
+(*     vatB pipelined the seq=1 forward).                                  *)
+(*   - sameConnection: vatA = vats[vatB].refs[2].resolverPeer = vatC?     *)
+(*     FALSE.                                                              *)
 (* Both fast-path predicates are FALSE, so vatB takes the SLOW PATH:       *)
-(* sets embargo = TRUE on refs[vatB][2] and emits op:e-flush-probe on      *)
-(* channels[vatB][vatC].  The embargo flip is the witness.                 *)
+(* sets embargo = TRUE on vats[vatB].refs[2] and emits op:e-flush-probe   *)
+(* on channels[vatB][vatC].  The embargo flip is the witness.             *)
 (*                                                                         *)
 (* The invariant EmbargoNeverFires_MC is intentionally the *negation* of   *)
 (* the embargo flip.  TLC reports a violation; that violation IS the       *)
@@ -61,47 +62,46 @@ DebugTrace == FALSE
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered,
-           gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 
 Init ==
     /\ host = <<"vatB", "vatC", "vatA">>
-    /\ refs = [p \in Peers |->
-                 [r \in (1..MaxRefId) |->
-                    CASE p = "vatA" /\ r = 1 ->
-                            \* vatA's view of p1; resolver vatB, already
-                            \* notified of resolution to (vatC, 2).  fresh =
-                            \* FALSE because the pre-staged op:deliver-only
-                            \* below was sent by vatA through this ref.
-                            PS!MkRemotePromise("vatB", 1,
-                                PS!ResRef("vatC", 2),
-                                FALSE, << >>, TRUE, FALSE)
-                      [] p = "vatA" /\ r = 2 ->
+    /\ vats =
+         [p \in Peers |->
+            [refs |->
+               [r \in (1..MaxRefId) |->
+                  CASE p = "vatA" /\ r = 1 ->
+                          \* vatA's view of p1; resolver vatB, already
+                          \* notified of resolution to (vatC, 2).  fresh =
+                          \* FALSE because the pre-staged op:deliver-only
+                          \* below was sent by vatA through this ref.
+                          PS!MkRemotePromise("vatB", 1,
+                              PS!ResRef("vatC", 2),
+                              FALSE, << >>, TRUE, FALSE)
+                    [] p = "vatA" /\ r = 2 ->
                             \* vatA's view of p2; resolver vatC.  Not yet
                             \* notified locally (the op:resolve from vatC is
                             \* still in flight on channels[vatC][vatB]; vatA
                             \* is not a listener in this staged scenario).
                             PS!MkRemotePromise("vatC", 2, PS!ResNone,
                                 FALSE, << >>, TRUE, TRUE)
-                      [] p = "vatA" /\ r = 3 ->
+                    [] p = "vatA" /\ r = 3 ->
                             PS!MkLocalTarget
-                      [] p = "vatB" /\ r = 1 ->
+                    [] p = "vatB" /\ r = 1 ->
                             \* p1 on vatB, already resolved to (vatC, 2) and
                             \* listener {vatA} already notified.  Marking
                             \* notified = TRUE keeps ResolverResolve disabled.
                             PS!MkLocalPromise(<< >>, {"vatA"},
                                 PS!ResRef("vatC", 2), {}, TRUE, "idle")
-                      [] p = "vatB" /\ r = 2 ->
+                    [] p = "vatB" /\ r = 2 ->
                             \* vatB's view of p2; resolver vatC.  Unresolved
                             \* and un-embargoed at Init.  fresh = FALSE: the
                             \* pre-staged op:deliver-only on channels[vatB]
@@ -113,26 +113,29 @@ Init ==
                             \* SendListen is not enabled.
                             PS!MkRemotePromise("vatC", 2, PS!ResNone,
                                 FALSE, << >>, TRUE, FALSE)
-                      [] p = "vatB" /\ r = 3 ->
+                    [] p = "vatB" /\ r = 3 ->
                             PS!MkRemoteTarget("vatA", 3)
-                      [] p = "vatC" /\ r = 1 ->
+                    [] p = "vatC" /\ r = 1 ->
                             PS!MkRemotePromise("vatB", 1, PS!ResNone,
                                 FALSE, << >>, TRUE, TRUE)
-                      [] p = "vatC" /\ r = 2 ->
+                    [] p = "vatC" /\ r = 2 ->
                             \* p2 on vatC, already resolved to (vatA, 3) and
                             \* listener {vatB} already dispatched (in-flight
                             \* on channels[vatC][vatB]).
                             PS!MkLocalPromise(<< >>, {"vatB"},
                                 PS!ResRef("vatA", 3), {}, TRUE, "idle")
-                      [] p = "vatC" /\ r = 3 ->
+                    [] p = "vatC" /\ r = 3 ->
                             PS!MkRemoteTarget("vatA", 3)
-                      [] OTHER -> PS!EntryNone]]
+                    [] OTHER -> PS!EntryNone],
+             gifts |->
+               [q \in Peers |-> [i \in 1..MaxGifts |-> PS!NoGift]],
+             nextGiftId |-> 1]]
     /\ channels =
          [p \in Peers |->
             [q \in Peers |->
                CASE p = "vatB" /\ q = "vatC" ->
                        \* vatB's previously-forwarded pipelined send to its
-                       \* resolver.  refId = refs[vatB][2].resolverRefId = 2;
+                       \* resolver.  refId = vats[vatB].refs[2].resolverRefId = 2;
                        \* sentOnRef = 1 records the original ref vatA sent on.
                        << [op |-> "op:deliver-only",
                            sender |-> "vatA",
@@ -146,10 +149,6 @@ Init ==
                  [] OTHER -> << >>]]
     /\ sent = 1
     /\ delivered = << >>
-    /\ gifts = [p \in Peers |->
-                  [q \in Peers |->
-                     [i \in 1..MaxGifts |-> PS!NoGift]]]
-    /\ nextGiftId = [p \in Peers |-> 1]
     /\ nextRefId = ChainLength + 1
     /\ lastAction = [name |-> "init"]
 
@@ -163,11 +162,12 @@ PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
 
-(* The witness: refs["vatB"][2].embargo MUST flip to TRUE on the
+(* The witness: vats["vatB"].refs[2].embargo MUST flip to TRUE on the
    embargo-firing branch.  Negating that with an invariant gives TLC a
-   counterexample trace whose final state has refs["vatB"][2].embargo =
-   TRUE -- exactly the firing we want to demonstrate. *)
+   counterexample trace whose final state has
+   vats["vatB"].refs[2].embargo = TRUE -- exactly the firing we want to
+   demonstrate. *)
 EmbargoNeverFires_MC ==
-    \/ refs["vatB"][2].kind # "RemotePromise"
-    \/ refs["vatB"][2].embargo = FALSE
+    \/ vats["vatB"].refs[2].kind # "RemotePromise"
+    \/ vats["vatB"].refs[2].embargo = FALSE
 ============================================================================

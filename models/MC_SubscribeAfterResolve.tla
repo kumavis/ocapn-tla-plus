@@ -43,15 +43,13 @@ DebugTrace == FALSE
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 

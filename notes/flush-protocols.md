@@ -48,8 +48,8 @@ RemoteReference  = RemotePromise | RemoteTarget
 LocalReference   = LocalPromise | LocalTarget
 ```
 
-Each peer maintains a partial map `refs[p][refId] = entry`. The entry's
-`kind` field discriminates the four cases:
+Each peer maintains a partial map `vats[p].refs[refId] = entry`. The
+entry's `kind` field discriminates the four cases:
 
 | `kind`          | Fields                                                                |
 | --------------- | --------------------------------------------------------------------- |
@@ -62,20 +62,20 @@ Each peer maintains a partial map `refs[p][refId] = entry`. The entry's
 
 Every `RemoteX` on peer A is the local-side presence of a corresponding
 `LocalX` on the peer whose name it carries. Quantified over the *allocated*
-domain `DOM(refs[p])` only:
+domain `DOMrefs(p) = {r : vats[p].refs[r] # EntryNone}` only:
 
 ```tla
 PairingInvariant ==
-    /\ \A p \in Peers, r \in DOM(refs[p]) :
-         refs[p][r].kind = "RemoteTarget" =>
-            LET q == refs[p][r].targetPeer
-                rq == refs[p][r].targetRefId
-            IN rq \in DOM(refs[q]) /\ refs[q][rq].kind = "LocalTarget"
-    /\ \A p \in Peers, r \in DOM(refs[p]) :
-         refs[p][r].kind = "RemotePromise" =>
-            LET q == refs[p][r].resolverPeer
-                rq == refs[p][r].resolverRefId
-            IN rq \in DOM(refs[q]) /\ refs[q][rq].kind = "LocalPromise"
+    /\ \A p \in Peers, r \in DOMrefs(p) :
+         vats[p].refs[r].kind = "RemoteTarget" =>
+            LET q == vats[p].refs[r].targetPeer
+                rq == vats[p].refs[r].targetRefId
+            IN rq \in DOMrefs(q) /\ vats[q].refs[rq].kind = "LocalTarget"
+    /\ \A p \in Peers, r \in DOMrefs(p) :
+         vats[p].refs[r].kind = "RemotePromise" =>
+            LET q == vats[p].refs[r].resolverPeer
+                rq == vats[p].refs[r].resolverRefId
+            IN rq \in DOMrefs(q) /\ vats[q].refs[rq].kind = "LocalPromise"
 ```
 
 A single `Local*` entry on peer `q` may be the presence of many `Remote*`
@@ -121,7 +121,7 @@ conflated:
 
 When peer `self` is asked to send `m` via refId `r`:
 
-| `refs[self][r].kind`                | Action                                          |
+| `vats[self].refs[r].kind`           | Action                                          |
 | ----------------------------------- | ----------------------------------------------- |
 | `LocalTarget`                       | apply `m` to `entry.sink` (deliver)             |
 | `RemoteTarget`                      | append `op:deliver-only(...)` to `channels[self][entry.targetPeer]` |
@@ -217,31 +217,32 @@ key" mapped into our model.
 Each peer that hosts gifts maintains a gift table keyed by `(gifter,
 giftId)`:
 
-```tla
-gifts : [Peers -> [Peers \X GiftIds -> GiftEntry \cup {<<>>}]]
+Gifts and the gifter-side counter are fields of the per-peer `vats[p]`
+record (`vats[p].gifts` and `vats[p].nextGiftId`); see `lib/PeerState.tla`.
 
-GiftEntry == [recipient : Peers, targetLocalRefId : RefIds, envelope : Envelopes]
+```tla
+vats[p].gifts : [Peers -> [GiftIds -> GiftEntry \cup {NoGift}]]
+
+GiftEntry == [kind : {"gift"}, recipient : Peers, targetLocalRefId : Nat]
 ```
 
-- `gifts[targetHost][gifter, giftId]` is the deposited gift on
+- `vats[targetHost].gifts[gifter][giftId]` is the deposited gift on
   `targetHost`, deposited by `gifter`, awaiting withdrawal by
   `recipient`.
-- `giftId` is **gifter-scoped**: gifter allocates a fresh giftId from its
-  own counter / namespace per deposit. `(alice, 1)` and `(bob, 1)` are
-  distinct gift entries.
+- `giftId` is **gifter-scoped**: each gifter allocates a fresh giftId
+  from its own counter `vats[gifter].nextGiftId` on every deposit.
+  `(alice, 1)` and `(bob, 1)` are distinct gift entries.
 - Multiple in-flight handoffs at the same `targetHost`, originated by
   different gifters, coexist without collision.
 - A gifter never re-uses a `(gifter, giftId)` pair until the gift has
-  been withdrawn (or expired). Modeled by a per-peer monotonic counter
-  `nextGiftId[gifter]` allocated at `op:deposit-gift` time.
-- The `envelope` is an opaque token bound to `(gifter, giftId, recipient,
-  targetHost)` — modelled as a single opaque value; real OCapN uses a
-  signed assertion.
+  been withdrawn (or expired): `vats[gifter].nextGiftId` is monotone
+  and only the gifter writes it.
+- Envelope authentication is out of scope for the v0 model.
 
-**Bounding for TLC.** `GiftIds == 0..MaxGifts` for a per-MC `MaxGifts`
-constant. A guarding state invariant `\A p \in Peers : nextGiftId[p] \in
-0..MaxGifts` prevents counter overflow; an MC that exhausts giftIds is
-reported as a model-size error rather than wrapping.
+**Bounding for TLC.** `GiftIds == 1..MaxGifts` for a per-MC `MaxGifts`
+constant. `vats[p].nextGiftId \in 0..(MaxGifts + 1)` is part of
+`VatStateType`; an MC that would exhaust giftIds disables further
+`HandoffInitiate` rather than wrapping.
 
 ### Gift lifecycle (one-shot)
 
@@ -253,20 +254,21 @@ Pending --[op:withdraw-gift received, envelope matches recipient]--> Empty
 A gift entry is created when the target host processes `op:deposit-gift`
 from the gifter, and is **removed atomically** in the same step that
 processes the matching `op:withdraw-gift`. No other action ever mutates a
-`gifts[*][*]` slot.
+`vats[*].gifts[*][*]` slot.
 
 Captured as invariants:
 
 - **`GiftOneShot`** — once redeemed, never seen again. Any subsequent
   `op:withdraw-gift(giftId, gifter, ...)` arriving at the target host
-  finds `gifts[self][gifter, giftId] = <<>>` and is rejected (modelled as
-  a no-op + trace marker; never silently re-deposit). The
-  `nextGiftId[gifter]` monotonicity guarantees a re-allocated giftId
-  never collides with an old one.
-- **`GiftHasOneRecipient`** — for as long as `gifts[targetHost][gifter,
-  giftId] /= <<>>`, only the recipient named in the entry's `recipient`
-  field can successfully withdraw it. The `op:withdraw-gift` handler
-  verifies `recipient = msg.from`; any other peer's withdraw is rejected.
+  finds `LocalGift(self, gifter, giftId) = NoGift` and is rejected
+  (modelled as a no-op + trace marker; never silently re-deposit). The
+  `vats[gifter].nextGiftId` monotonicity guarantees a re-allocated
+  giftId never collides with an old one.
+- **`GiftHasOneRecipient`** — for as long as
+  `vats[targetHost].gifts[gifter][giftId] # NoGift`, only the recipient
+  named in the entry's `recipient` field can successfully withdraw it.
+  The `op:withdraw-gift` handler verifies `recipient = msg.from`; any
+  other peer's withdraw is silently dropped.
 
 ## 7. 3PHO walkthrough (resolver-driven)
 
@@ -276,81 +278,77 @@ gifter; the listener is the recipient; `host[N]` is the target host.
 
 Pre-state:
 
-- `refs[host[N-1]][p_{N-1}]` is a `LocalPromise` with listener
+- `vats[host[N-1]].refs[p_{N-1}]` is a `LocalPromise` with listener
   `host[N-2]`, queue possibly non-empty (pre-resolve pipelined messages).
-- `refs[host[N-1]][r_T] = RemoteTarget(host[N], r_T_local)`.
-- `refs[host[N-2]][p_{N-1}] = RemotePromise(host[N-1], p_{N-1},
+- `vats[host[N-1]].refs[r_T] = RemoteTarget(host[N], r_T_local)`.
+- `vats[host[N-2]].refs[p_{N-1}] = RemotePromise(host[N-1], p_{N-1},
   localResolution=<none>)` — and was used to pipeline some
   `op:deliver-only`s sent at `host[N-2]` toward `host[N-1]`.
-- `refs[host[N]][r_T_local] = LocalTarget(sink)`.
-- `gifts[host[N]]` empty; `nextGiftId[host[N-1]] = 0`.
+- `vats[host[N]].refs[r_T_local] = LocalTarget(sink)`.
+- `vats[host[N]].gifts` empty; `vats[host[N-1]].nextGiftId = 1`.
 
 Step-by-step:
 
-1. **Resolver fires** `ResolverResolve` on `p_{N-1}`. The resolution is
-   `RemoteTarget(host[N], r_T_local)` → 3PHO required. Atomically:
-   - allocate `giftId = nextGiftId[host[N-1]]`; increment counter.
+1. **Gifter fires** `HandoffInitiate` (in this spec, handoff is
+   initiated independently of `ResolverResolve`; the resolver-driven
+   variant in the OCapN proposal is equivalent). Atomically:
+   - allocate `giftId = vats[gifter].nextGiftId`; increment counter.
+   - allocate `pw = nextRefId`; increment counter.
    - append `op:deposit-gift(giftId, recipient=host[N-2],
-     targetLocalRefId=r_T_local, envelope=env)` to
+     targetLocalRefId=r_T_local, pw)` to
      `channels[host[N-1]][host[N]]`.
-   - append `op:resolve(targetRefId=p_{N-1},
+   - append `op:resolve(targetRefId=pw,
      value=desc:handoff-give(gifter=host[N-1], targetHost=host[N],
-     giftId, env))` to `channels[host[N-1]][host[N-2]]`.
-   - drain `refs[host[N-1]][p_{N-1}].queue` through `host[N-1]`'s
-     kind-dispatch (recurse on `r_T` → wire-forward to `host[N]`).
-   - mark `refs[host[N-1]][p_{N-1}].resolution = RemoteTarget(host[N],
-     r_T_local)`.
-2. **`host[N]` receives** `op:deposit-gift`. Installs
-   `gifts[host[N]][host[N-1], giftId] = {recipient: host[N-2],
-   targetLocalRefId: r_T_local, envelope: env}`.
-3. **`host[N-2]` receives** `op:resolve(p_{N-1}, desc:handoff-give(...))`
-   via `ReceiveOpResolve_Handoff`. Atomically:
-   - mint a fresh local refId `pw` for the withdraw-promise.
-   - install `refs[host[N-2]][pw] = RemotePromise(host[N], <opaque
-     sentinel>, localResolution=<none>)`. The opacity is captured in the
-     opaque sentinel — `host[N-2]` cannot dispatch on the `resolverRefId`
-     for anything other than "send to `host[N]`".
-   - install `refs[host[N-2]][p_{N-1}].localResolution = pw`. From now
-     on, sends on `p_{N-1}` recursively dispatch to `pw`, routing over
-     `channels[host[N-2]][host[N]]`. The recipient still does not know
-     they're hitting `T` specifically.
+     giftId, pw))` to `channels[host[N-1]][host[N-2]]`.
+   - (Chain-form variant: `targetRefId` is an existing forwarder
+     `RemotePromise` on the gifter, not `pw`.)
+2. **`host[N]` receives** `op:deposit-gift`. Atomically installs
+   `vats[host[N]].gifts[host[N-1]][giftId] = {recipient: host[N-2],
+   targetLocalRefId: r_T_local}` and pre-mints
+   `vats[host[N]].refs[pw] = LocalPromise(queue=<empty>,
+   listeners={host[N-2]}, resolution=<none>)` so that pipelined sends
+   on the recipient's `RemotePromise(pw)` have somewhere to queue
+   before the withdraw arrives.
+3. **`host[N-2]` receives** `op:resolve(pw, desc:handoff-give(...))` via
+   `ReceiveNetwork`. Atomically:
+   - install `vats[host[N-2]].refs[pw] = RemotePromise(host[N], pw,
+     localResolution=<none>)`. `host[N-2]` cannot dispatch on the
+     `resolverRefId` for anything other than "send to `host[N]`".
    - append `op:withdraw-gift(giftId, gifter=host[N-1],
-     withdrawPromiseRefId=pw, env)` to
-     `channels[host[N-2]][host[N]]`.
+     withdrawPromiseRefId=pw)` to `channels[host[N-2]][host[N]]`.
+   - (Chain-form: also set
+     `vats[host[N-2]].refs[targetRefId].localResolution = ResRef(pw)`
+     so future sends on the existing forwarder hop through `pw`.)
 4. **`host[N]` receives** `op:withdraw-gift`. **All atomic, to preserve
    `PairingInvariant`:**
-   - look up `gifts[host[N]][host[N-1], giftId]`.
-   - **reject** if the slot is empty (`GiftOneShot` violation
-     attempt) or `recipient \neq msg.from` (`GiftHasOneRecipient`
-     violation attempt); on rejection, drop the message and emit a trace
-     marker.
-   - otherwise: install `refs[host[N]][pw] = LocalPromise(queue=<empty>,
-     listeners={host[N-2]}, resolution=<none>)`. `host[N]` adopts the
-     recipient-supplied `pw` refId — both peers thereby share the same
-     refId for this withdraw-promise (v0 global-refId convention).
-   - resolve `refs[host[N]][pw]` to `LocalTarget(r_T_local)`: the
-     listener (`host[N-2]`) is handled via the `LocalTarget`-bypass; a
-     direct `op:resolve(pw, desc:remote-target(host[N], r_T_local))` is
-     appended to `channels[host[N]][host[N-2]]`. *No nested 3PHO*.
-   - clear `gifts[host[N]][host[N-1], giftId] := <<>>` (one-shot
-     consumption).
+   - look up `vats[host[N]].gifts[host[N-1]][giftId]`.
+   - **disable** if the slot is empty (deposit not yet processed; the
+     message stays at the head of the inbox until the deposit lands).
+   - **silently drop** if `recipient # msg.from` (`GiftHasOneRecipient`
+     enforcement).
+   - otherwise: install
+     `vats[host[N]].refs[pw].resolution = ResRef(host[N], r_T_local)`
+     and `vats[host[N]].refs[pw].notified = TRUE`; append a direct
+     `op:resolve(pw, desc:remote-target(host[N], r_T_local))` to
+     `channels[host[N]][host[N-2]]`. *No nested 3PHO*.
+   - clear `vats[host[N]].gifts[host[N-1]][giftId] := NoGift` (one-shot
+     consumption) in the same `vats EXCEPT` update.
 5. **`host[N-2]` receives** `op:resolve(pw, desc:remote-target(host[N],
-   r_T_local))` via `ReceiveOpResolve_RemoteTarget`. Installs
-   `refs[host[N-2]][pw].localResolution = RemoteTarget(host[N],
-   r_T_local)`. Mints (if needed) a fresh `RemoteTarget` entry on
-   `host[N-2]` to satisfy the pairing invariant.
+   r_T_local))` via `ReceiveNetwork`. Installs
+   `vats[host[N-2]].refs[pw].localResolution = RemoteTarget(host[N],
+   r_T_local)`.
 
 ### Pipelined-pre-resolve sends
 
-Between steps 1 and 4, `host[N-2]` can pipeline sends on `p_{N-1}` →
-they recursively dispatch via `pw` → routed over
-`channels[host[N-2]][host[N]]`. The `op:deliver-only` carries `pw` as
-its refId; `host[N]` looks up `refs[host[N]][pw]`. *Before* step 4,
-that lookup fails (slot not yet allocated) — the message is held
-pending receipt of `op:withdraw-gift`. *After* step 4 but before the
-queue drains, the message lands in `refs[host[N]][pw].queue` as
-ordinary `LocalPromise` queue traffic; step 4's resolve-to-`T_local`
-then drains the queue via the intra-vat cascade.
+Between steps 1 and 4, `host[N-2]` can pipeline sends on `pw` →
+routed over `channels[host[N-2]][host[N]]`. The `op:deliver-only`
+carries `pw` as its refId; `host[N]` looks up `LocalRef(host[N], pw)`.
+*Before* step 2, that lookup is `EntryNone` — the message is held at
+the head of the inbox pending receipt of `op:deposit-gift`. *After*
+step 2 but before step 4, the message lands in
+`vats[host[N]].refs[pw].queue` as ordinary `LocalPromise` queue
+traffic; step 4's resolve-to-`r_T_local` then drains the queue via
+the intra-vat cascade.
 
 This matches OCapN reality: pipelined messages on a handed-off ref
 *can* reach the target before the recipient has learned the target's
@@ -364,14 +362,14 @@ The deposit (`op:deposit-gift`) is sent on
 `op:withdraw-gift` lands on `channels[host[N-2]][host[N]]`. These are
 *different* wires, so per-pair FIFO does **not** guarantee the deposit
 arrives before the withdraw. The spec explicitly orders them via the
-`ReceiveOpWithdrawGift` precondition: it blocks until
-`gifts[self][gifter, giftId] /= <<>>`, naturally serializing on the
-deposit.
+`op:withdraw-gift` branch of `ReceiveNetwork`: it is disabled until
+`LocalGift(self, gifter, giftId) # NoGift`, naturally serializing on
+the deposit.
 
 ## 8. Subscribe-to-already-resolved
 
 When `op:listen(subscriber, refId)` arrives at `h` and
-`refs[h][refId].resolution /= <none>`:
+`vats[h].refs[refId].resolution # ResNone`:
 
 - Immediately reply with the same `op:resolve(refId, value)` the
   resolver would have sent when it first resolved:
@@ -379,14 +377,14 @@ When `op:listen(subscriber, refId)` arrives at `h` and
     `LocalTarget` on `h` (bypass case).
   - Fresh 3PHO triplet (`op:deposit-gift` to target host plus
     `op:resolve(..., desc:handoff-give(...))` to `subscriber`,
-    consuming a fresh `nextGiftId[h]`) if the resolution is a
-    `RemoteTarget`.
+    consuming a fresh `vats[h].nextGiftId`) if the resolution is a
+    `RemoteTarget`. *Not modelled in v0; see
+    [`notes/path-changes.md`](path-changes.md).*
 
-The handler does not retroactively insert `subscriber` into the
-`listeners` set, since the resolution event is one-shot and already
-fired. If `refs[h][refId].resolution = <none>`, the handler instead
-adds `subscriber` to `refs[h][refId].listeners` for future
-notification.
+The handler also records `subscriber` in `vats[h].refs[refId].listeners`
+for bookkeeping. If `vats[h].refs[refId].resolution = ResNone`, the
+handler just records the listener for future notification by
+`ResolverResolve`.
 
 ## 9. `op:flush` — resolver-initiated, pushes upstream (locality-clean)
 
@@ -498,10 +496,10 @@ flush sentinel + ack on the slow path.
 
 State additions:
 
-- `refs[L][r].fresh` — Boolean, set `TRUE` at `RemotePromise`
+- `vats[L].refs[r].fresh` — Boolean, set `TRUE` at `RemotePromise`
   construction, cleared `FALSE` by `ApplyRoute` (via `MarkRefNonFresh`)
-  the first time `L` takes a `"wire"` route originating at this ref. Once
-  cleared, it stays cleared.
+  the first time `L` takes a `"wire"` route originating at this ref.
+  Once cleared, it stays cleared.
 
 Wire messages:
 
@@ -520,20 +518,22 @@ Wire messages:
 
 Receive of `op:resolve(r, desc:remote-target(p, r'))` at `L`:
 
-1. Evaluate **fast-path** predicates (purely local at `L`):
-   - `isFresh := refs[L][r].fresh`
-   - `sameConn := msg.value.peer = refs[L][r].resolverPeer`
+1. Evaluate **fast-path** predicates (purely local at `L`, via
+   `LocalRef(L, r)`):
+   - `isFresh := LocalRef(L, r).fresh`
+   - `sameConn := msg.value.peer = LocalRef(L, r).resolverPeer`
    - `fastPath := isFresh \/ sameConn`
 2. If `fastPath`: install `localResolution = ResRef(p, r')`; `embargo`
    stays `FALSE`. Future sends route directly through the installed
    `localResolution` via the normal `Route` recursion.
 3. Otherwise (**slow path**): stage `localResolution = ResRef(p, r')`,
    set `embargo = TRUE`, and append
-   `OpEFlushProbe(L, r, refs[L][r].resolverRefId)` to `channels[L][
-   refs[L][r].resolverPeer]`. The probe rides the same wire as
-   previously-pipelined sends.
+   `OpEFlushProbe(L, r, LocalRef(L, r).resolverRefId)` to
+   `channels[L][LocalRef(L, r).resolverPeer]` (via
+   `AppendToOutbox(_, L, LocalRef(L, r).resolverPeer, _)`). The probe
+   rides the same wire as previously-pipelined sends.
 4. While `embargo` is set, `Route(L, r)` returns `"hold"`; new sends
-   buffer in `refs[L][r].pending`.
+   buffer in `vats[L].refs[r].pending`.
 
 Receive of `op:e-flush-probe`:
 
@@ -546,12 +546,12 @@ Receive of `op:e-flush-probe`:
   instead of appending to `delivered`.
 
 Receive of `op:e-flush-probe-ack` (polymorphic on the originator's
-entry kind at `refs[to][originRefId]`):
+entry kind at `LocalRef(self, originRefId)`):
 
 - **EJavaFlush** (originator is a subscriber holding a
   `RemotePromise`): assert `embargo = TRUE`, set `embargo = FALSE`.
-  `ProcessHold` can then drain `refs[to][originRefId].pending` to the
-  newly-committed post-resolution path.
+  `ProcessHold` can then drain `vats[self].refs[originRefId].pending`
+  to the newly-committed post-resolution path.
 - **OpFlushProtocol** (originator is a resolver holding a
   `LocalPromise`): assert `flushPhase = "out"`, set
   `flushPhase = "acked"`. `SendOpResolveAfterFlush` is now enabled
@@ -589,15 +589,16 @@ Topology: vatA → vatB(p1) → vatC(p2) → vatD(T)
 ```
 
 The faithful EJavaFlush implemented in this spec handles this case as
-follows: at s9 the `fresh` bit on `refs[vatB][2]` is `FALSE` (cleared at
-s7 when vatB forwarded seq=1) and `sameConnection` is `FALSE`
-(vatD ≠ vatC), so the slow path fires. vatB emits an `op:e-flush-probe`
-on `channels[vatB][vatC]` and sets `embargo = TRUE`. The probe
-re-forwards through vatC to vatD, where it queues behind the in-flight
-seq=1. When vatD receives the probe, it emits `op:e-flush-probe-ack`
-directly back to vatB on `channels[vatD][vatB]`. By the time the ack
-reaches vatB, seq=1 has been delivered at vatD. vatB lifts the embargo,
-drains `refs[vatB][2].pending`, and seq=2 follows in order.
+follows: at s9 the `fresh` bit on `vats[vatB].refs[2]` is `FALSE`
+(cleared at s7 when vatB forwarded seq=1) and `sameConnection` is
+`FALSE` (vatD ≠ vatC), so the slow path fires. vatB emits an
+`op:e-flush-probe` on `channels[vatB][vatC]` and sets `embargo = TRUE`.
+The probe re-forwards through vatC to vatD, where it queues behind the
+in-flight seq=1. When vatD receives the probe, it emits
+`op:e-flush-probe-ack` directly back to vatB on
+`channels[vatD][vatB]`. By the time the ack reaches vatB, seq=1 has
+been delivered at vatD. vatB lifts the embargo, drains
+`vats[vatB].refs[2].pending`, and seq=2 follows in order.
 
 `MC_EJavaFlush_3Chain` passes with the current design.
 
@@ -662,9 +663,9 @@ old-path traffic.  **FIFO preserved.**
 Critically, every state transition in this protocol is driven by an
 explicit protocol message (`op:flush`, `op:flush-ack`,
 `op:e-flush-probe`, `op:e-flush-probe-ack`) and every precondition
-reads only the actor's own `refs[self][r]` state. No action observes
-the other end of any channel, and no action treats "my outbox is
-empty" as "the recipient has processed". The probe + ack mechanism is
+reads only the actor's own `LocalRef(self, r)` state. No action
+observes the other end of any channel, and no action treats "my outbox
+is empty" as "the recipient has processed". The probe + ack mechanism is
 exactly the same primitive used by EJavaFlush's slow path; only the
 originator's entry kind (`RemotePromise` for EJavaFlush vs
 `LocalPromise` for OpFlushProtocol) differs in the ack-receive

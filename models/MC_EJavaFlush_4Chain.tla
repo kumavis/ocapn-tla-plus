@@ -1,7 +1,7 @@
 ---------------------- MODULE MC_EJavaFlush_4Chain ----------------------
 (***************************************************************************)
 (* CANONICAL EJavaFlush on a 4-chain (faithful DelayedRedirector model).   *)
-(* On op:resolve at host[2] for refs[host[2]][3], if `fresh = FALSE`        *)
+(* On op:resolve at host[2] for vats[host[2]].refs[3], if `fresh = FALSE`   *)
 (* (i.e., host[2] has previously pipelined sends through this ref) and    *)
 (* the new target is not in the same vat as the current resolver, host[2] *)
 (* takes the slow path: stage localResolution, set embargo, and emit       *)
@@ -34,15 +34,13 @@ CONSTANT DebugTrace  \* set in .cfg: FALSE for normal run, TRUE for _Debug.cfg
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 
@@ -69,10 +67,10 @@ EventualDelivery_MC == PS!EventualDelivery
 NoSlowPathCompletion_MC ==
     ~( /\ Len(delivered) = NumMessages
        /\ \E p \in Peers : \E r \in 1..MaxRefId :
-            /\ r \in {ri \in 1..MaxRefId : refs[p][ri] # PS!EntryNone}
-            /\ refs[p][r].kind = "RemotePromise"
-            /\ refs[p][r].localResolution # PS!ResNone
-            /\ refs[p][r].fresh = FALSE
-            /\ refs[p][r].embargo = FALSE )
+            /\ r \in {ri \in 1..MaxRefId : vats[p].refs[ri] # PS!EntryNone}
+            /\ vats[p].refs[r].kind = "RemotePromise"
+            /\ vats[p].refs[r].localResolution # PS!ResNone
+            /\ vats[p].refs[r].fresh = FALSE
+            /\ vats[p].refs[r].embargo = FALSE )
 
 ============================================================================

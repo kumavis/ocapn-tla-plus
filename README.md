@@ -13,7 +13,7 @@ routing policy.
 
 ## Reference taxonomy
 
-Per-peer state `refs[p][r]` for every refId `r`:
+Per-peer state `vats[p].refs[r]` for every refId `r`:
 
 | Kind            | Fields                                                                            |
 |-----------------|-----------------------------------------------------------------------------------|
@@ -166,9 +166,10 @@ What's deferred — see [`notes/path-changes.md`](notes/path-changes.md):
 ```
 ocapn-tla-plus/
 ├── lib/
-│   ├── References.tla    # ref taxonomy, MkChainRefs, PairingInvariant
-│   ├── Network.tla       # per-pair FIFO channels
-│   └── PeerState.tla     # sent, delivered, gifts, nextGiftId, nextRefId
+│   ├── References.tla    # ref taxonomy + constructors, host, MkChainRefs
+│   ├── Network.tla       # per-pair FIFO channels + inbox/outbox accessors
+│   └── PeerState.tla     # vats[p].{refs,gifts,nextGiftId}, sent, delivered,
+│                         # nextRefId, and per-actor accessor operators
 ├── spec/
 │   └── PromiseResolution.tla
 ├── models/                # scenario MCs (policy-level race scenarios)

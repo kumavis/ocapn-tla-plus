@@ -10,10 +10,10 @@
 (* HandoffInitiate fires once, then the three wire messages (deposit-     *)
 (* gift, op:resolve(desc:handoff-give), withdraw-gift) get processed in   *)
 (* any FIFO-respecting order.  At quiescence:                              *)
-(*   - gifts[vatC][vatA][1] is cleared (NoGift)                           *)
-(*   - refs[vatC][3] is LocalPromise resolved to ResRef(vatC, 2)          *)
-(*   - refs[vatB][3] is RemotePromise(vatC, 3) with localResolution =     *)
-(*     ResRef(vatC, 2)                                                    *)
+(*   - vats[vatC].gifts[vatA][1] is cleared (NoGift)                      *)
+(*   - vats[vatC].refs[3] is LocalPromise resolved to ResRef(vatC, 2)     *)
+(*   - vats[vatB].refs[3] is RemotePromise(vatC, 3) with                  *)
+(*     localResolution = ResRef(vatC, 2)                                  *)
 (*                                                                         *)
 (* PairingInvariant, GiftOneShot, GiftHasOneRecipient hold throughout.    *)
 (***************************************************************************)
@@ -35,40 +35,39 @@ DebugTrace == FALSE
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered,
-           gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 
 Init ==
     /\ host = <<"vatA", "vatC">>
-    /\ refs = [p \in Peers |->
-                 [r \in (1..MaxRefId) |->
-                    CASE p = "vatA" /\ r = 1 ->
-                            PS!MkLocalPromise(<< >>, {},
-                                PS!ResNone, {}, FALSE, "idle")
-                      [] p = "vatA" /\ r = 2 ->
+    /\ vats =
+         [p \in Peers |->
+            [refs |->
+               [r \in (1..MaxRefId) |->
+                  CASE p = "vatA" /\ r = 1 ->
+                          PS!MkLocalPromise(<< >>, {},
+                              PS!ResNone, {}, FALSE, "idle")
+                    [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
-                      [] p = "vatB" /\ r = 1 ->
+                    [] p = "vatB" /\ r = 1 ->
                             PS!MkRemotePromise("vatA", 1, PS!ResNone,
                                 FALSE, << >>, TRUE, TRUE)
-                      [] p = "vatC" /\ r = 2 ->
+                    [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalTarget
-                      [] OTHER -> PS!EntryNone]]
+                    [] OTHER -> PS!EntryNone],
+             gifts |->
+               [q \in Peers |-> [i \in 1..MaxGifts |-> PS!NoGift]],
+             nextGiftId |-> 1]]
     /\ channels = [p \in Peers |-> [q \in Peers |-> << >>]]
     /\ sent = 0
     /\ delivered = << >>
-    /\ gifts = [p \in Peers |-> [q \in Peers |-> [i \in 1..MaxGifts |->
-                  PS!NoGift]]]
-    /\ nextGiftId = [p \in Peers |-> 1]
     /\ nextRefId = ChainLength + 1
     /\ lastAction = [name |-> "init"]
 

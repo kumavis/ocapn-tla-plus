@@ -35,15 +35,13 @@ CONSTANT DebugTrace
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered, gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 
@@ -75,10 +73,10 @@ EventualDelivery_MC == PS!EventualDelivery
 NoSlowPathCompletion_MC ==
     ~( /\ Len(delivered) = NumMessages
        /\ \E p \in Peers : \E r \in 1..MaxRefId :
-            /\ r \in {ri \in 1..MaxRefId : refs[p][ri] # PS!EntryNone}
-            /\ refs[p][r].kind = "RemotePromise"
-            /\ refs[p][r].localResolution # PS!ResNone
-            /\ refs[p][r].fresh = FALSE
-            /\ refs[p][r].embargo = FALSE )
+            /\ r \in {ri \in 1..MaxRefId : vats[p].refs[ri] # PS!EntryNone}
+            /\ vats[p].refs[r].kind = "RemotePromise"
+            /\ vats[p].refs[r].localResolution # PS!ResNone
+            /\ vats[p].refs[r].fresh = FALSE
+            /\ vats[p].refs[r].embargo = FALSE )
 
 ============================================================================

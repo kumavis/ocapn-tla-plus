@@ -7,8 +7,8 @@
 (* pipelined message can race ahead.                                       *)
 (*                                                                         *)
 (* Expectation: the target host's ReceiveNetwork handler is *disabled* on *)
-(* the pipelined message (refs[targetHost][pw] = EntryNone) and the wire  *)
-(* head-of-line blocks until the deposit pre-mints LocalPromise(pw).       *)
+(* the pipelined message (vats[targetHost].refs[pw] = EntryNone) and the  *)
+(* wire head-of-line blocks until the deposit pre-mints LocalPromise(pw). *)
 (* Once the deposit fires, LocalPromise(pw) exists, the pipelined send is  *)
 (* enqueued at LocalPromise(pw).queue, and the standard ReceiveOpWithdraw *)
 (* + ProcessPending drain delivers it to the LocalTarget.  This is the    *)
@@ -19,10 +19,11 @@
 (*   channels[vatB][vatC] = << op:deliver-only(seq=1, refId=3),           *)
 (*                              op:withdraw-gift(1, vatA, 3) >>           *)
 (*   channels[vatA][vatC] = << op:deposit-gift(1, vatB, 2, 3) >>          *)
-(*   refs[vatA][2]    = RemoteTarget(vatC, 2)                            *)
-(*   refs[vatB][1]    = RemotePromise(vatC, 3, listenSent=TRUE)           *)
-(*   refs[vatC][2]    = LocalTarget                                      *)
-(*   gifts[vatC][vatA][1] = NoGift   (deposit not yet processed)         *)
+(*   vats[vatA].refs[2]            = RemoteTarget(vatC, 2)                *)
+(*   vats[vatB].refs[1]            = RemotePromise(vatC, 3,               *)
+(*                                                 listenSent=TRUE)       *)
+(*   vats[vatC].refs[2]            = LocalTarget                          *)
+(*   vats[vatC].gifts[vatA][1]     = NoGift  (deposit not yet processed)  *)
 (*                                                                         *)
 (* The deliver-only is staged at the head of vatB->vatC; the withdraw is  *)
 (* behind it.  Because the deliver-only's refId=3 has no entry at vatC,   *)
@@ -48,31 +49,33 @@ DebugTrace == FALSE
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered,
-           gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 
 Init ==
     /\ host = <<"vatA", "vatC">>
-    /\ refs = [p \in Peers |->
-                 [r \in (1..MaxRefId) |->
-                    CASE p = "vatA" /\ r = 2 ->
-                            PS!MkRemoteTarget("vatC", 2)
-                      [] p = "vatB" /\ r = 1 ->
+    /\ vats =
+         [p \in Peers |->
+            [refs |->
+               [r \in (1..MaxRefId) |->
+                  CASE p = "vatA" /\ r = 2 ->
+                          PS!MkRemoteTarget("vatC", 2)
+                    [] p = "vatB" /\ r = 1 ->
                             PS!MkRemotePromise("vatC", 3, PS!ResNone,
                                 FALSE, << >>, TRUE, TRUE)
-                      [] p = "vatC" /\ r = 2 ->
+                    [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalTarget
-                      [] OTHER -> PS!EntryNone]]
+                    [] OTHER -> PS!EntryNone],
+             gifts |->
+               [q \in Peers |-> [i \in 1..MaxGifts |-> PS!NoGift]],
+             nextGiftId |-> IF p = "vatA" THEN 2 ELSE 1]]
     /\ channels =
          [p \in Peers |->
             [q \in Peers |->
@@ -95,10 +98,6 @@ Init ==
                  [] OTHER -> << >>]]
     /\ sent = 1     \* PeerSend already fired (msg now in vatB->vatC wire)
     /\ delivered = << >>
-    /\ gifts = [p \in Peers |->
-                  [q \in Peers |->
-                     [i \in 1..MaxGifts |-> PS!NoGift]]]
-    /\ nextGiftId = [p \in Peers |-> IF p = "vatA" THEN 2 ELSE 1]
     /\ nextRefId = ChainLength + MaxGifts + 1
     /\ lastAction = [name |-> "init"]
 

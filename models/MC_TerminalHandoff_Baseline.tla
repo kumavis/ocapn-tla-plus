@@ -12,9 +12,11 @@
 (*   behavior is the side handoff vatA -> vatB about vatC's target.       *)
 (*                                                                         *)
 (* The handoff:                                                            *)
-(*   1. HandoffInitiate(vatA, vatB, refs[vatA][2]) -> op:deposit-gift     *)
-(*      to vatC, op:resolve(pw, desc:handoff-give) to vatB.               *)
-(*   2. vatC processes op:deposit-gift -> sets gifts[vatC][vatA][1].      *)
+(*   1. HandoffInitiate(vatA, vatB, vats[vatA].refs[2]) ->                *)
+(*      op:deposit-gift to vatC, op:resolve(pw, desc:handoff-give) to     *)
+(*      vatB.                                                              *)
+(*   2. vatC processes op:deposit-gift -> sets                            *)
+(*      vats[vatC].gifts[vatA][1].                                        *)
 (*   3. vatB processes op:resolve(handoff-give) -> mints RemotePromise pw *)
 (*      and sends op:withdraw-gift(1, vatA, pw) to vatC.                  *)
 (*   4. vatC processes op:withdraw-gift -> mints LocalPromise pw, resolves*)
@@ -45,16 +47,13 @@ DebugTrace == FALSE
 VARIABLES
     channels,
     host,
-    refs,
+    vats,
     sent,
     delivered,
-    gifts,
-    nextGiftId,
     nextRefId,
     lastAction
 
-vars == << channels, host, refs, sent, delivered,
-           gifts, nextGiftId, nextRefId, lastAction >>
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 PS == INSTANCE PromiseResolution
 
