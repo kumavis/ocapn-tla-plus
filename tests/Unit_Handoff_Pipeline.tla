@@ -43,6 +43,7 @@ EmptyInitialListeners == TRUE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == TRUE
+EnableRepropagate == FALSE
 RoutingPolicy == "NoPromiseResolution"
 DebugTrace == FALSE
 
@@ -74,7 +75,7 @@ Init ==
                             PS!MkLocalTarget
                     [] p = "vatC" /\ r = 3 ->
                             PS!MkLocalPromise(<< >>, {"vatB"},
-                                PS!ResNone, {}, FALSE, "idle")
+                                PS!ResNone, {}, FALSE, "idle", FALSE, {})
                     [] OTHER -> PS!EntryNone],
              gifts |->
                [q \in Peers |->

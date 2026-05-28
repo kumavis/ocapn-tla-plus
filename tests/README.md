@@ -64,6 +64,31 @@ for a third-party introduction).  They pin the chain-form
 |-----------------------------------|-------------------------------------------|---------------------------------------------------------------------------|
 | `Unit_WireDesc_DescriptorChoice`  | 3 peers, statically pre-staged channels   | Sanity check that `desc:import-target` / `desc:export-target` / `desc:handoff-give` are emitted only in the situations the wire contract allows (`WireDescriptorContract`, `TwoPartyWireDescsOnly` and the `*Classified_MC` shape predicates hold on the initial state) |
 
+## Inter-vat promise shortening
+
+| MC                                | Topology                                                                  | What it exercises                                                                                                                                                                                                                                                                                                                                  |
+|-----------------------------------|---------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `Unit_PromiseShorten_TwoParty`    | 2 peers, ChainLength 3, `host = <<vatB, vatA, vatA>>` (Naive)             | Positive witness for Phase A's two-party promise emission (see `notes/path-changes.md` §1.2.b and §3.8): `vatB.ResolverResolve` at `r=1` MUST append `op:resolve(targetRefId=1, desc:export-promise(refId=2))` to `channels[vatB][vatA]` because `vatA` is both the sole listener AND the new promise's host. Expected outcome: violation (negation invariant) |
+| `Unit_PromiseShorten_ThreeParty`  | 3 peers, ChainLength 3, `host = <<vatB, vatC, vatC>>`, HeadPeer = vatA (Naive) | Positive witness for Phase B's three-party promise-cap handoff (see `notes/path-changes.md` §1.2.b and §3.9): `vatB.ResolverResolve` at `r=1` MUST append `op:resolve(targetRefId=1, desc:handoff-give(_, vatC, _, _))` to `channels[vatB][vatA]`, where the gifted target is the `LocalPromise(2)` on vatC. The withdraw reply that completes the handoff later carries `desc:import-promise(2)` (Phase B's promise-cap withdraw branch). Expected outcome: violation (negation invariant `NoChainHandoffGiveForPromise_MC`) |
+
+The race surfaces these unlock are exercised at policy level by:
+
+- [`MC_NaivePromiseResolution_PromiseShorten`](../models/MC_NaivePromiseResolution_PromiseShorten.tla)
+  (Phase A 2-party form, dual to `MC_NaivePromiseResolution` for the
+  Target case).
+- [`MC_NaivePromiseResolution_3Chain`](../models/MC_NaivePromiseResolution_3Chain.tla)
+  (Phase B 3-party form; same race surface across three peers).
+- [`MC_EJavaFlush_3Chain_PromiseShorten`](../models/MC_EJavaFlush_3Chain_PromiseShorten.tla)
+  and [`MC_OpFlushProtocol_3Chain_PromiseShorten`](../models/MC_OpFlushProtocol_3Chain_PromiseShorten.tla)
+  (Phase C 2-party flush extension; expected pass).
+- [`MC_EJavaFlush_3Chain_PromiseShorten_3Party`](../models/MC_EJavaFlush_3Chain_PromiseShorten_3Party.tla)
+  and [`MC_OpFlushProtocol_3Chain_PromiseShorten_3Party`](../models/MC_OpFlushProtocol_3Chain_PromiseShorten_3Party.tla)
+  (Phase C 3-party; `NumMessages = 1`; expected pass).
+- [`MC_EJavaFlush_TribbleFourWay`](../models/MC_EJavaFlush_TribbleFourWay.tla)
+  (Phase D; expected `EndToEndRefFIFO_MC` violation).
+- [`MC_OpFlushProtocol_TribbleFourWay`](../models/MC_OpFlushProtocol_TribbleFourWay.tla)
+  (Phase D; expected `EndToEndRefFIFO_MC` pass with `NumMessages = 2`).
+
 ## Running
 
 ```

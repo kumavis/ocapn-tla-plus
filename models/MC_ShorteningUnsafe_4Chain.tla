@@ -30,6 +30,7 @@ EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
+EnableRepropagate == FALSE
 RoutingPolicy == "ShorteningUnsafe"
 DebugTrace == FALSE
 

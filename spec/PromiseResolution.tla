@@ -133,7 +133,8 @@ CONSTANT
     EmptyInitialListeners,
     EnableDynamicListen,
     EnableHandoff,
-    EnableHandoffInitiate
+    EnableHandoffInitiate,
+    EnableRepropagate
 
 ASSUME NumMessages \in Nat \ {0}
 ASSUME RoutingPolicy \in {
@@ -148,6 +149,7 @@ ASSUME EmptyInitialListeners \in BOOLEAN
 ASSUME EnableDynamicListen \in BOOLEAN
 ASSUME EnableHandoff \in BOOLEAN
 ASSUME EnableHandoffInitiate \in BOOLEAN
+ASSUME EnableRepropagate \in BOOLEAN
 
 ----------------------------------------------------------------------------
 (* Wire messages. *)
@@ -279,14 +281,29 @@ DescValues ==
     \cup {DescHandoffGive(g, h, i, w) :
             g \in Peers, h \in Peers, i \in GiftIds, w \in RefIds}
 
-(* Host peer and wire refId for a resolution value at the resolver. *)
+(* Host peer and wire refId for a resolution value at the resolver.
+   Dispatches on the entry kind:
+     - LocalTarget / LocalPromise : the resolver itself is the cap host;
+       the wire refId is the resolver-local refId pointed at by `res`.
+     - RemoteTarget               : the cap is hosted on entry.targetPeer
+       at entry.targetRefId (target's local refId).
+     - RemotePromise              : the cap is hosted on entry.resolverPeer
+       at entry.resolverRefId (resolver-host's local refId).  This arm is
+       reached when a LocalPromise resolves to another peer's promise --
+       the inter-vat promise-shortening case modelled in Phase A. *)
 TargetHostPeer(resolver, res) ==
     LET entry == LocalRef(resolver, res.refId)
-    IN IF entry.kind = "LocalTarget" THEN resolver ELSE entry.targetPeer
+    IN CASE entry.kind = "LocalTarget"   -> resolver
+         [] entry.kind = "LocalPromise"  -> resolver
+         [] entry.kind = "RemoteTarget"  -> entry.targetPeer
+         [] entry.kind = "RemotePromise" -> entry.resolverPeer
 
 TargetWireRefId(resolver, res) ==
     LET entry == LocalRef(resolver, res.refId)
-    IN IF entry.kind = "LocalTarget" THEN res.refId ELSE entry.targetRefId
+    IN CASE entry.kind = "LocalTarget"   -> res.refId
+         [] entry.kind = "LocalPromise"  -> res.refId
+         [] entry.kind = "RemoteTarget"  -> entry.targetRefId
+         [] entry.kind = "RemotePromise" -> entry.resolverRefId
 
 TargetCapKind(resolver, res) ==
     LocalRef(resolver, res.refId).kind
@@ -470,15 +487,14 @@ Route(self, r) ==
      embargo stays FALSE.  Subsequent sends route directly through the
      installed localResolution via the normal Route recursion.
 
-       - `fresh` (per-RemotePromise sticky bit defined in
-         lib/References.tla; mirrors e-on-java's isFresh [1]): TRUE
-         while nothing has ever been pipelined through this proxy;
-         cleared FALSE by ApplyRoute the first time route.tag = "wire"
-         is taken with this RemotePromise as the wire source
-         (MarkRefNonFresh).  Once fresh is FALSE it stays FALSE, even
-         after the local outbox drains.  This is what distinguishes
-         the e-on-java semantic from the strictly-weaker "is anything
-         currently in my outbox" heuristic.
+       - `fresh` (only on RemotePromise entries in vats[L].refs; mirrors
+         RemotePromiseHandler [1] / EProxyHandler.isFresh [6]): TRUE while
+         this peer has never pipelined on that imported promise; cleared
+         FALSE by MarkRefNonFresh on route.tag = "wire" (outbound to the
+         paired resolver wire) or "hold" (local pending while embargoed).
+         The resolver's paired LocalPromise does not carry `fresh`; it
+         uses pipelinedListeners when wire traffic proves the listener
+         used its import.  Once fresh is FALSE it stays FALSE.
        - `sameConnection`: the new target is in the same vat as the
          current resolver (desc is import-* and sender = resolverPeer).
          Any new send arrives behind prior sends by p2p FIFO on that
@@ -545,24 +561,38 @@ DeliveredRecord(msg) ==
      ref |-> msg.sentOnRef,
      seq |-> msg.seq]
 
-(* MarkRefNonFresh: locality-preserving sticky update on `fresh`.  When a
-   wire route is taken at `self`, the originating RemotePromise on `self`
-   (the one whose (resolverPeer, resolverRefId) matches the wire target)
-   has anything-ever-pipelined-through-me set; we clear `fresh` to FALSE
-   on all such RemotePromise entries.  Pairing usually means at most one
-   match; we tolerate more.
+(* ClearRemotePromiseFresh: this peer has pipelined on its local
+   RemotePromise at refId r (e-on-java: myFreshFlag cleared on any send
+   through the imported promise handler).  Per-peer write only. *)
+ClearRemotePromiseFresh(self, refId, vats0) ==
+    LET entry == vats0[self].refs[refId]
+    IN IF /\ entry # EntryNone
+          /\ entry.kind = "RemotePromise"
+       THEN [vats0 EXCEPT ![self].refs[refId].fresh = FALSE]
+       ELSE vats0
 
-   Per-peer write: only `self`'s own vats[self].refs slice is mutated. *)
+(* MarkRefNonFresh: locality-preserving sticky update on `fresh`.
+   - route.tag = "wire": clear every local RemotePromise whose paired
+     resolver wire is (route.peer, route.refId) — the import used for
+     this outbound send.
+   - route.tag = "hold": clear the RemotePromise at route.refId on self
+     (local buffer while embargoed; still "used" per e-on-java [1]).
+   Per-peer write: only vats[self].refs. *)
 MarkRefNonFresh(self, route, vats0) ==
-    [vats0 EXCEPT
-        ![self].refs =
-            [r \in RefIds |->
-                IF /\ vats0[self].refs[r] # EntryNone
-                   /\ vats0[self].refs[r].kind = "RemotePromise"
-                   /\ vats0[self].refs[r].resolverPeer = route.peer
-                   /\ vats0[self].refs[r].resolverRefId = route.refId
-                THEN [vats0[self].refs[r] EXCEPT !.fresh = FALSE]
-                ELSE vats0[self].refs[r]]]
+    IF route.tag = "wire"
+    THEN [vats0 EXCEPT
+             ![self].refs =
+                 [r \in RefIds |->
+                     IF /\ vats0[self].refs[r] # EntryNone
+                        /\ vats0[self].refs[r].kind = "RemotePromise"
+                        /\ vats0[self].refs[r].resolverPeer = route.peer
+                        /\ vats0[self].refs[r].resolverRefId = route.refId
+                     THEN [vats0[self].refs[r] EXCEPT !.fresh = FALSE]
+                     ELSE vats0[self].refs[r]]]
+    ELSE IF /\ route.tag = "hold"
+            /\ route.peer = self
+       THEN ClearRemotePromiseFresh(self, route.refId, vats0)
+    ELSE vats0
 
 (* ApplyRoute: layer the route.tag effects atop a starting
    (ch0, refs0, delivered0) triple, returning a record with the next
@@ -594,7 +624,7 @@ MarkRefNonFresh(self, route, vats0) ==
 ApplyRoute(self, route, msg, ch0, vats0, delivered0) ==
     LET m2 == [msg EXCEPT !.refId = route.refId]
         vats1 ==
-            IF route.tag = "wire"
+            IF route.tag \in {"wire", "hold"}
             THEN MarkRefNonFresh(self, route, vats0)
             ELSE vats0
     IN CASE route.tag = "deliver"
@@ -758,6 +788,79 @@ IsResolutionTarget(self, res) ==
     /\ res.refId \in DOMrefs(self)
     /\ LocalRef(self, res.refId).kind \in {"LocalTarget", "RemoteTarget"}
 
+(* IsResolutionPromise: dual of IsResolutionTarget for the inter-vat
+   promise-shortening case (notes/path-changes.md §1.2.b, Phase A).
+   Holds when the LocalPromise's resolution points at another Promise
+   on the resolver's ref table.  When the resolution points at an
+   intra-vat LocalPromise the cap host is the resolver itself (silent
+   intra-vat shortening, §1.2.a); when it points at a RemotePromise the
+   cap host is that promise's resolverPeer (the inter-vat case). *)
+IsResolutionPromise(self, res) ==
+    /\ res # ResNone
+    /\ res.refId \in DOMrefs(self)
+    /\ LocalRef(self, res.refId).kind \in {"LocalPromise", "RemotePromise"}
+
+(* AllListenersTwoParty: every listener can receive a two-party
+   import/export descriptor (cap host is sender or receiver).  This
+   gates Phase A's promise-shortening emission: any third-party
+   listener would require desc:handoff-give for a Promise cap, which
+   is Phase B work. *)
+AllListenersTwoParty(resolver, res, listeners) ==
+    LET capHost == TargetHostPeer(resolver, res)
+    IN \A l \in listeners : ~NeedsHandoffIntro(resolver, l, capHost)
+
+(* MarkListenerPipelined: resolver-side witness for a listener's *paired
+   import*.  Listener L holds RemotePromise(resolver, promiseRefId) with
+   its own local `fresh` (cleared when L pipelines on that presence via
+   MarkRefNonFresh — wire or hold — never read here).  When that pipeline
+   reaches the resolver on the wire, an op:deliver-only from L on this
+   LocalPromise ref records L in pipelinedListeners.  Independent state:
+   vats[L].refs[...] vs vats[resolver].refs[promiseRefId]. *)
+MarkListenerPipelined(resolver, promiseRefId, from, vats0) ==
+    LET entry == vats0[resolver].refs[promiseRefId]
+    IN IF /\ entry # EntryNone
+           /\ entry.kind = "LocalPromise"
+           /\ from \in entry.listeners
+        THEN [vats0 EXCEPT
+                 ![resolver].refs[promiseRefId].pipelinedListeners =
+                     entry.pipelinedListeners \cup {from}]
+        ELSE vats0
+
+(* ListenersWitnessPipelined: at least one listener has pipelined on its
+   local imported RemotePromise (e-on-java: !isFresh on that handler).
+   The resolver learns this only from protocol traffic on the pair —
+   pipelinedListeners on its LocalPromise — not by reading L's ref table.
+   Gates EJavaFlush Phase C 3-party emission only; OpFlushProtocol does
+   not use this witness.  See notes/path-changes.md §3.10. *)
+ListenersWitnessPipelined(resolver, promiseRefId, listeners) ==
+    LocalRef(resolver, promiseRefId).pipelinedListeners \intersect listeners
+    # {}
+
+(* CoTerminalPromiseHost: terminal and penultimate promise share a host
+   (e.g. host = <<vatB, vatC, vatC>>).  Used to gate EJavaFlush and
+   OpFlush resolver-initiated 3-party handoff at r=1 only (state-space). *)
+CoTerminalPromiseHost ==
+    host[ChainLength] = host[ChainLength - 1]
+
+(* OpFlush promise-shaped notify (re-propagation): 2-party or 3-party
+   handoff-give; no listener `fresh` gate. *)
+OpFlushCoversPromise(self, res, listeners) ==
+    /\ IsResolutionPromise(self, res)
+    /\ \/ AllListenersTwoParty(self, res, listeners)
+       \/ \E l \in listeners :
+            NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
+
+(* OpFlush ResolverResolve / probe / post-flush: same, but 3-party
+   handoff-give only at head r=1 on co-terminal topologies (state-space;
+   MC_OpFlushProtocol_4Chain).  Still no `fresh` gate. *)
+OpFlushResolverCoversPromise(self, r, res, listeners) ==
+    /\ IsResolutionPromise(self, res)
+    /\ \/ AllListenersTwoParty(self, res, listeners)
+       \/ /\ \E l \in listeners :
+                NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
+          /\ r = 1
+          /\ CoTerminalPromiseHost
+
 (* Fold listener notifications into outboxes.  Two-party resolutions carry
    import/export descriptors; third-party resolutions emit deposit-gift +
    desc:handoff-give (one gift per listener).  Locality: only appends on
@@ -816,21 +919,85 @@ ResolverResolve ==
                res == ChainResolutionFor(r)
                listeners == entry.listeners
                isTarget == IsResolutionTarget(self, res)
-               fireOpResolveNow ==
-                   /\ isTarget
+               isPromise == IsResolutionPromise(self, res)
+               \* Phase A (notes/path-changes.md §1.2.b): when the
+               \* resolution is promise-shaped AND every listener can
+               \* receive a two-party desc:import-promise /
+               \* desc:export-promise (no handoff-give needed), the
+               \* resolver also fires op:resolve so listeners can
+               \* shorten their dispatch through the new promise's
+               \* host.  Gated to NaivePromiseResolution and
+               \* ShorteningUnsafe because the new race surface
+               \* (in-flight forwards on the old path racing direct
+               \* sends on the new path) is exactly what those
+               \* policies are designed to surface; EJavaFlush and
+               \* OpFlushProtocol extend to promise-shaped chains
+               \* (Phase C).  Three-party promise caps use
+               \* desc:handoff-give (Phase B).
+               \* Phase A (2-party): NaivePromiseResolution +
+               \* ShorteningUnsafe.  Phase C extends to EJavaFlush; the
+               \* listener-side EJavaFlush slow path on the existing
+               \* op:resolve / TargetWireDescs receive branch already
+               \* handles the new race (embargo + e-flush-probe through
+               \* the chain via Route, which now cascades through
+               \* promise-shaped hops).
+               firePromiseShorten ==
+                   /\ isPromise
                    /\ listeners # {}
+                   /\ AllListenersTwoParty(self, res, listeners)
                    /\ RoutingPolicy \in
                           {"NaivePromiseResolution",
                            "ShorteningUnsafe",
                            "EJavaFlush"}
-               fireOpFlush ==
-                   /\ isTarget
+               \* Phase B/C (3-party): desc:handoff-give for Promise caps.
+               \* Phase C adds EJavaFlush (immediate op:resolve; listeners
+               \* apply local chainEmbargo).  OpFlushProtocol uses
+               \* fireOpFlush instead of fireOpResolveNow for 3-party.
+               \* ListenersWitnessPipelined gates EJavaFlush 3-party only.
+               firePromiseShorten3Party ==
+                   /\ isPromise
                    /\ listeners # {}
-                   /\ RoutingPolicy = "OpFlushProtocol"
-               needsHandoff ==
-                   isTarget
                    /\ \E l \in listeners :
                         NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
+                   /\ ListenersWitnessPipelined(self, r, listeners)
+                   /\ RoutingPolicy \in
+                          {"NaivePromiseResolution",
+                           "ShorteningUnsafe",
+                           "EJavaFlush"}
+                   \* Flush policies: head-hop 3PHO only on co-terminal
+                   \* topologies (see CoTerminalPromiseHost).
+                   /\ (RoutingPolicy \in
+                           {"NaivePromiseResolution", "ShorteningUnsafe"}
+                       \/ /\ r = 1
+                          /\ CoTerminalPromiseHost)
+               fireOpResolveNow ==
+                   \/ /\ isTarget
+                      /\ listeners # {}
+                      /\ RoutingPolicy \in
+                             {"NaivePromiseResolution",
+                              "ShorteningUnsafe",
+                              "EJavaFlush"}
+                   \/ firePromiseShorten
+                   \/ firePromiseShorten3Party
+               \* Phase C: OpFlushProtocol fires fireOpFlush for
+               \* promise-shaped resolutions too, with the same
+               \* op:flush -> op:flush-ack -> SendTargetFlushProbe ->
+               \* SendOpResolveAfterFlush handshake.  The probe routes
+               \* through Route which cascades through promise hops
+               \* (queue at unresolved LocalPromise hops; the chain
+               \* eventually settles and the probe drains).
+               fireOpFlush ==
+                   /\ listeners # {}
+                   /\ RoutingPolicy = "OpFlushProtocol"
+                   /\ \/ isTarget
+                      \/ OpFlushResolverCoversPromise(self, r, res, listeners)
+               needsHandoff ==
+                   /\ \E l \in listeners :
+                        NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
+                   /\ \/ isTarget
+                      \/ firePromiseShorten3Party
+                      \/ /\ RoutingPolicy = "OpFlushProtocol"
+                         /\ isPromise
                notify ==
                    AppendResolveNotifications(channels, self, r, res,
                        listeners, LocalNextGiftId(self), nextRefId)
@@ -896,31 +1063,39 @@ SendTargetFlushProbe ==
         /\ RoutingPolicy = "OpFlushProtocol"
         /\ LocalRef(self, r).kind = "LocalPromise"
         /\ LocalRef(self, r).resolution # ResNone
-        /\ IsResolutionTarget(self, LocalRef(self, r).resolution)
+        \* Phase C: probe also fires for promise-shaped resolutions
+        \* (notes/path-changes.md §3.10).  Route follows the cascade to
+        \* the actual current next-hop wire target; queue / hold tags
+        \* mean the chain has an unresolved hop downstream and the
+        \* action waits (the chain will eventually advance).
+        \* Promise branch matches fireOpFlush (2-party or 3-party handoff).
+        /\ \/ IsResolutionTarget(self, LocalRef(self, r).resolution)
+           \/ OpFlushResolverCoversPromise(self, r, LocalRef(self, r).resolution,
+                LocalRef(self, r).listeners)
         /\ LocalRef(self, r).flushPending = {}
         /\ ~LocalRef(self, r).notified
         /\ LocalRef(self, r).flushPhase = "idle"
         /\ Len(LocalRef(self, r).queue) = 0
         /\ LET entry == LocalRef(self, r)
                res == entry.resolution
-               targetEntry == LocalRef(self, res.refId)
-               targetPeer ==
-                   IF targetEntry.kind = "RemoteTarget"
-                   THEN targetEntry.targetPeer
-                   ELSE self
-               targetRefId ==
-                   IF targetEntry.kind = "RemoteTarget"
-                   THEN targetEntry.targetRefId
-                   ELSE res.refId
-               probe == OpEFlushProbe(self, r, targetRefId)
+               route == Route(self, res.refId)
+               probe ==
+                   IF route.tag = "wire"
+                   THEN OpEFlushProbe(self, r, route.refId)
+                   ELSE OpEFlushProbe(self, r, res.refId)
+                            \* unreachable for tag = deliver
            IN
-              \* Local target (self IS the target host): no
-              \* cross-vat flush needed, so the transition is "idle"
-              \* -> "acked" without any wire message.  Remote target:
-              \* emit the probe on self's own outbox to targetPeer and
-              \* transition "idle" -> "out"; the ack receive below
-              \* transitions "out" -> "acked".
-              (CASE targetPeer = self
+              \* Route classifies the current next-hop dispatch:
+              \*   deliver -> chain bottoms out at a LocalTarget on
+              \*              self; no cross-vat flush needed.
+              \*   wire    -> emit probe to route.peer at route.refId;
+              \*              FIFO carries it behind prior forwards.
+              \*   queue/hold -> chain has an unresolved promise hop
+              \*              or an embargoed RemotePromise; action
+              \*              disabled, will re-fire when the hop
+              \*              clears.
+              /\ route.tag \in {"deliver", "wire"}
+              /\ (CASE route.tag = "deliver"
                        -> /\ vats' =
                               [vats EXCEPT
                                   ![self].refs[r].flushPhase = "acked"]
@@ -929,15 +1104,15 @@ SendTargetFlushProbe ==
                                    actor |-> self, refId |-> r,
                                    targetPeer |-> self,
                                    phase |-> "acked"])
-                 [] OTHER
+                 [] route.tag = "wire"
                        -> /\ vats' =
                               [vats EXCEPT
                                   ![self].refs[r].flushPhase = "out"]
                           /\ channels' =
-                              AppendToOutbox(channels, self, targetPeer, probe)
+                              AppendToOutbox(channels, self, route.peer, probe)
                           /\ Mark([name |-> "SendTargetFlushProbe",
                                    actor |-> self, refId |-> r,
-                                   targetPeer |-> targetPeer,
+                                   targetPeer |-> route.peer,
                                    phase |-> "out"]))
         /\ UNCHANGED << host, sent, delivered >>
         /\ HandoffVarsUnchanged
@@ -964,7 +1139,10 @@ SendOpResolveAfterFlush ==
         /\ RoutingPolicy = "OpFlushProtocol"
         /\ LocalRef(self, r).kind = "LocalPromise"
         /\ LocalRef(self, r).resolution # ResNone
-        /\ IsResolutionTarget(self, LocalRef(self, r).resolution)
+        \* Phase C: post-flush op:resolve for promise-shaped resolutions.
+        /\ \/ IsResolutionTarget(self, LocalRef(self, r).resolution)
+           \/ OpFlushResolverCoversPromise(self, r, LocalRef(self, r).resolution,
+                LocalRef(self, r).listeners)
         /\ LocalRef(self, r).flushPending = {}
         /\ LocalRef(self, r).flushPhase = "acked"
         /\ ~LocalRef(self, r).notified
@@ -992,6 +1170,101 @@ SendOpResolveAfterFlush ==
               /\ Mark([name |-> "SendOpResolveAfterFlush",
                        actor |-> self,
                        refId |-> r])
+
+----------------------------------------------------------------------------
+(* RepropagatePromiseShorten (Phase D): when `self` learns a downstream     *)
+(* shortening by installing `localResolution` on `recvR`, and `self` also  *)
+(* hosts a chain `LocalPromise` `chainR` whose `resolution` points at        *)
+(* `recvR`, notify `chainR`'s upstream listeners using the same local        *)
+(* predicates as `ResolverResolve` (witness-gated 3-party under flush          *)
+(* policies).  No cross-node flush relay; each peer decides from its own     *)
+(* ref table (notes/path-changes.md §3.1).  Gated by `EnableRepropagate`.   *)
+
+RepropagatePromiseShorten ==
+    /\ EnableRepropagate
+    /\ \E self \in Peers :
+       \E recvR \in DOMrefs(self) :
+       \E chainR \in ChainRefs \intersect DOMrefs(self) :
+        /\ LocalRef(self, recvR).kind = "RemotePromise"
+        /\ LocalRef(self, recvR).localResolution # ResNone
+        /\ LocalRef(self, chainR).kind = "LocalPromise"
+        /\ LocalRef(self, chainR).resolution # ResNone
+        /\ LocalRef(self, chainR).resolution.refId = recvR
+        /\ LocalRef(self, chainR).listeners # {}
+        /\ ~LocalRef(self, chainR).repropNotified
+        /\ LET res == LocalRef(self, recvR).localResolution
+               listeners == LocalRef(self, chainR).listeners
+               isTarget == IsResolutionTarget(self, res)
+               isPromise == IsResolutionPromise(self, res)
+               firePromiseShorten ==
+                   /\ isPromise
+                   /\ AllListenersTwoParty(self, res, listeners)
+                   /\ RoutingPolicy \in
+                          {"NaivePromiseResolution",
+                           "ShorteningUnsafe",
+                           "EJavaFlush"}
+               firePromiseShorten3Party ==
+                   /\ isPromise
+                   /\ \E l \in listeners :
+                        NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
+                   /\ ListenersWitnessPipelined(self, chainR, listeners)
+                   /\ RoutingPolicy \in
+                          {"NaivePromiseResolution",
+                           "ShorteningUnsafe",
+                           "EJavaFlush"}
+               fireOpResolveNow ==
+                   \/ /\ isTarget
+                      /\ RoutingPolicy \in
+                             {"NaivePromiseResolution",
+                              "ShorteningUnsafe",
+                              "EJavaFlush"}
+                   \/ firePromiseShorten
+                   \/ firePromiseShorten3Party
+               fireOpFlush ==
+                   /\ RoutingPolicy = "OpFlushProtocol"
+                   /\ \/ isTarget
+                      \/ OpFlushCoversPromise(self, res, listeners)
+               needsHandoff ==
+                   /\ \E l \in listeners :
+                        NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
+                   /\ \/ isTarget
+                      \/ firePromiseShorten3Party
+                      \/ /\ RoutingPolicy = "OpFlushProtocol"
+                         /\ isPromise
+               notify ==
+                   AppendResolveNotifications(channels, self, chainR, res,
+                       listeners, LocalNextGiftId(self), nextRefId)
+           IN
+              /\ res # ResNone
+              /\ (fireOpResolveNow \/ fireOpFlush)
+              /\ (CASE fireOpResolveNow
+                       -> /\ ListenersNotifyable(self, res, listeners)
+                          /\ vats' =
+                              [vats EXCEPT
+                                  ![self].refs[chainR].repropNotified = TRUE,
+                                  ![self].refs[chainR].notified = TRUE,
+                                  ![self].nextGiftId = notify.gidNext]
+                          /\ channels' = notify.channels
+                          /\ IF needsHandoff
+                             THEN nextRefId' = notify.pwNext
+                             ELSE UNCHANGED nextRefId
+                   [] fireOpFlush
+                       -> /\ vats' =
+                              [vats EXCEPT
+                                  ![self].refs[chainR].repropNotified = TRUE,
+                                  ![self].refs[chainR].flushPending =
+                                      listeners]
+                          /\ channels' =
+                              AppendToManyOutboxes(channels, self, listeners,
+                                  OpFlush(chainR))
+                   [] OTHER -> FALSE)
+              /\ UNCHANGED << host, sent, delivered >>
+              /\ IF ~fireOpResolveNow \/ ~needsHandoff THEN HandoffVarsUnchanged
+                 ELSE TRUE
+              /\ Mark([name |-> "RepropagatePromiseShorten",
+                       actor |-> self,
+                       chainR |-> chainR,
+                       recvR |-> recvR])
 
 ----------------------------------------------------------------------------
 (* ReceiveNetwork: dispatch on the head of self's inbox from `from`.       *)
@@ -1034,9 +1307,10 @@ ReceiveNetwork ==
                                 -> IF \/ entry.resolution = ResNone
                                       \/ Len(entry.queue) > 0
                                    THEN /\ vats' =
-                                            [vats EXCEPT
-                                                ![self].refs[r].queue =
-                                                    Append(@, msg)]
+                                            MarkListenerPipelined(self, r, from,
+                                                [vats EXCEPT
+                                                    ![self].refs[r].queue =
+                                                        Append(@, msg)])
                                         /\ channels' = ch0
                                         /\ UNCHANGED delivered
                                         /\ Mark([name |-> "ReceiveNetwork",
@@ -1058,6 +1332,8 @@ ReceiveNetwork ==
                                                         -> "forward-wire"
                                                   [] route.tag = "queue"
                                                         -> "forward-queue"
+                                                  [] route.tag = "hold"
+                                                        -> "forward-hold"
                                             markRec ==
                                                 IF route.tag = "wire"
                                                 THEN [name |-> "ReceiveNetwork",
@@ -1070,9 +1346,20 @@ ReceiveNetwork ==
                                                       from |-> from, to |-> self,
                                                       seq |-> msg.seq, refId |-> r]
                                         IN
-                                           /\ route.tag \in {"deliver", "wire", "queue"}
+                                           \* Phase C (notes/path-changes.md
+                                           \* §3.10): "hold" is reachable
+                                           \* when Promise shortening chains
+                                           \* this LocalPromise through to an
+                                           \* embargoed RemotePromise.  The
+                                           \* RemotePromise branch already
+                                           \* accepted "hold" -- this branch
+                                           \* was missing it pre-Phase-C and
+                                           \* deadlocked instead.
+                                           /\ route.tag \in {"deliver", "wire", "queue", "hold"}
                                            /\ channels' = after.channels
-                                           /\ vats' = after.vats
+                                           /\ vats' =
+                                                MarkListenerPipelined(self, r, from,
+                                                    after.vats)
                                            /\ delivered' = after.delivered
                                            /\ Mark(markRec)
                             [] entry.kind = "RemotePromise"
@@ -1153,10 +1440,23 @@ ReceiveNetwork ==
                         \* purely local at `self`.
                         isFreshHere ==
                             entry.kind = "RemotePromise" /\ entry.fresh
+                        \* sameConn is restricted to Target descriptors
+                        \* (notes/path-changes.md §3.10).  For a
+                        \* Promise descriptor, the new target is a
+                        \* Promise hosted on the sender; existing
+                        \* forwards through the receiver's chain may
+                        \* take an intermediate hop on the receiver
+                        \* whose queue is independent of the sender's
+                        \* FIFO -- the new direct path can bypass
+                        \* that queue, surfacing an ordering race
+                        \* (see MC_EJavaFlush_3Chain_PromiseShorten
+                        \* counterexample).  Under EJavaFlush this
+                        \* forces the slow embargo + e-flush-probe
+                        \* path for Promise shortening, matching the
+                        \* chain-form handoff-give branch above.
                         sameConn ==
                             entry.kind = "RemotePromise"
-                            /\ v.desc \in {"desc:import-target",
-                                           "desc:import-promise"}
+                            /\ v.desc = "desc:import-target"
                             /\ from = entry.resolverPeer
                         fastPath == isFreshHere \/ sameConn
                         \* Handoff withdraw-promise responses (refId allocated
@@ -1165,15 +1465,26 @@ ReceiveNetwork ==
                         \* race-surface for the policy gating that applies to
                         \* chain promise resolution.
                         isHandoffPw == r > ChainLength
+                        \* Withdraw-promise fast install only for Target
+                        \* descriptors; Promise caps use the normal EJavaFlush
+                        \* slow path so the chain ref's embargo is respected.
+                        isHandoffPwTarget ==
+                            isHandoffPw /\ v.desc = "desc:import-target"
+                        isHandoffPwPromiseCap ==
+                            /\ isHandoffPw
+                            /\ v.desc \in {"desc:import-promise",
+                                           "desc:export-promise"}
                         installNow ==
-                            \/ isHandoffPw
+                            \/ isHandoffPwTarget
+                            \/ /\ isHandoffPwPromiseCap
+                               /\ RoutingPolicy # "EJavaFlush"
                             \/ RoutingPolicy = "NaivePromiseResolution"
                             \/ RoutingPolicy = "ShorteningUnsafe"
                             \/ /\ RoutingPolicy = "EJavaFlush"
                                /\ fastPath
                             \/ RoutingPolicy = "OpFlushProtocol"
                         embargoInstead ==
-                            /\ ~isHandoffPw
+                            /\ ~(isHandoffPw /\ v.desc = "desc:import-target")
                             /\ RoutingPolicy = "EJavaFlush"
                             /\ ~fastPath
                         \* Slow path: emit downstream probe on self's own
@@ -1183,20 +1494,48 @@ ReceiveNetwork ==
                         \* would mutate it at each forward.
                         probeMsg ==
                             OpEFlushProbe(self, r, entry.resolverRefId)
+                        \* Block withdraw-promise Promise resolutions while
+                        \* the chain binder ref is still under EJavaFlush
+                        \* embargo (handoff-give slow path on refs[cr]).
+                        handoffPwBlocked ==
+                            /\ isHandoffPw
+                            /\ v.desc \in {"desc:import-promise",
+                                           "desc:export-promise"}
+                            /\ RoutingPolicy = "EJavaFlush"
+                            /\ \E cr \in ChainRefs \intersect DOMrefs(self) :
+                                 /\ LocalRef(self, cr).kind = "RemotePromise"
+                                 /\ LocalRef(self, cr).localResolution =
+                                        ResRef(self, r)
+                                 /\ LocalRef(self, cr).embargo
                     IN
+                       /\ ~handoffPwBlocked
                        /\ entry # EntryNone
                        /\ entry.kind = "RemotePromise"
                        /\ (CASE installNow
-                                -> /\ vats' =
-                                       [vats EXCEPT
-                                           \* OpFlushProtocol path: clear
-                                           \* embargo (was set by op:flush);
-                                           \* now pending can drain.  Other
-                                           \* policies fall through here too;
-                                           \* embargo was already FALSE.
-                                           ![self].refs[r].localResolution = newLocalRes,
-                                           ![self].refs[r].embargo = FALSE]
-                                   /\ channels' = ch0
+                                -> LET chainBinder ==
+                                           IF isHandoffPw
+                                           THEN CHOOSE cr \in ChainRefs \intersect DOMrefs(self) :
+                                                    LocalRef(self, cr).kind =
+                                                        "RemotePromise"
+                                                    /\ LocalRef(self, cr)
+                                                           .localResolution =
+                                                        ResRef(self, r)
+                                                ELSE 0
+                                       vatsBase ==
+                                           [vats EXCEPT
+                                               ![self].refs[r].localResolution =
+                                                   newLocalRes,
+                                               ![self].refs[r].embargo = FALSE]
+                                   IN /\ vats' =
+                                          IF /\ RoutingPolicy =
+                                                    "OpFlushProtocol"
+                                             /\ isHandoffPw
+                                             /\ chainBinder # 0
+                                          THEN [vatsBase EXCEPT
+                                                    ![self].refs[chainBinder]
+                                                        .embargo = FALSE]
+                                          ELSE vatsBase
+                                      /\ channels' = ch0
                             [] embargoInstead
                                 -> /\ vats' =
                                        [vats EXCEPT
@@ -1306,6 +1645,15 @@ ReceiveNetwork ==
                             /\ isChain
                             /\ RoutingPolicy = "EJavaFlush"
                             /\ ~chainFresh
+                        \* OpFlush: after op:flush-ack the resolver may send
+                        \* handoff-give, but keep listener embargo on the
+                        \* chain ref until the withdraw-promise resolves so
+                        \* post-shorten sends stay in pending (local
+                        \* single-node condition; no flush relay).
+                        chainOpFlushEmbargo ==
+                            /\ isChain
+                            /\ RoutingPolicy = "OpFlushProtocol"
+                            /\ ~chainFresh
                         chainProbe ==
                             OpEFlushProbe(self, targetRefId,
                                           chainEntry.resolverRefId)
@@ -1326,7 +1674,8 @@ ReceiveNetwork ==
                                             \* it at its existing (FALSE)
                                             \* value.
                                             ![self].refs[targetRefId].embargo =
-                                                IF chainEmbargo THEN TRUE
+                                                IF chainEmbargo \/ chainOpFlushEmbargo
+                                                THEN TRUE
                                                 ELSE IF RoutingPolicy =
                                                           "OpFlushProtocol"
                                                      THEN FALSE
@@ -1563,7 +1912,7 @@ ReceiveNetwork ==
                                 ![self].gifts[from][gid] = entry,
                                 ![self].refs[pw] =
                                     MkLocalPromise(<< >>, {rcp}, ResNone, {},
-                                                   FALSE, "idle")]
+                                                   FALSE, "idle", FALSE, {})]
                        /\ channels' = ch0
                        /\ UNCHANGED << host, sent, delivered, nextRefId >>
                        /\ Mark([name |-> "ReceiveNetwork",
@@ -1599,7 +1948,31 @@ ReceiveNetwork ==
                             /\ depositSeen
                             /\ entry.recipient = from
                         tlr == IF recipientOK THEN entry.targetLocalRefId ELSE 0
-                        resVal == DescImportTarget(tlr)
+                        \* Phase B (notes/path-changes.md §3.9): the gift's
+                        \* target on `self` may be a LocalTarget (the
+                        \* classic 3PHO case) OR a LocalPromise (an
+                        \* inter-vat promise gift -- e.g. a chain-form
+                        \* handoff-give whose underlying cap was a chain
+                        \* LocalPromise).  Dispatch on the kind to pick
+                        \* the matching receiver-relative descriptor:
+                        \*   LocalTarget  -> desc:import-target(tlr)
+                        \*   LocalPromise -> desc:import-promise(tlr)
+                        \* Either way the recipient's RemotePromise(pw)
+                        \* receives the descriptor and installs
+                        \* localResolution = ResRef(self, tlr).  When
+                        \* the cap is a promise, the pre-minted
+                        \* LocalPromise(pw).resolution becomes
+                        \* ResRef(self, tlr) where tlr is itself a
+                        \* LocalPromise on self -- intra-vat promise
+                        \* shortening that drains via the existing
+                        \* cascade in Route.
+                        tlrKind ==
+                            IF recipientOK THEN LocalRef(self, tlr).kind
+                                            ELSE "none"
+                        resVal ==
+                            IF tlrKind = "LocalPromise"
+                            THEN DescImportPromise(tlr)
+                            ELSE DescImportTarget(tlr)
                     IN
                        /\ depositSeen
                        /\ (CASE recipientOK
@@ -1608,7 +1981,7 @@ ReceiveNetwork ==
                                    \* state boundary.  The LocalPromise(pw)
                                    \* was pre-minted on deposit; we now only
                                    \* install its resolution.
-                                   /\ LocalRef(self, tlr).kind = "LocalTarget"
+                                   /\ tlrKind \in {"LocalTarget", "LocalPromise"}
                                    /\ LocalRef(self, pw).kind = "LocalPromise"
                                    /\ vats' =
                                         [vats EXCEPT
@@ -1726,15 +2099,37 @@ HandoffInitiate ==
         \E existingRefId \in
               {0} \cup
               {r \in DOMrefs(self) :
-                  LocalRef(self, r).kind \in
-                      {"LocalPromise", "RemotePromise"}} :
+                  /\ r # srcRef  \* Phase B (notes/path-changes.md §3.9):
+                                  \* chain-form must rebind a DIFFERENT
+                                  \* ref than the cap being gifted, or
+                                  \* the withdraw response can cycle the
+                                  \* recipient's localResolution
+                                  \* (refs[r].localResolution = pw and
+                                  \* pw.localResolution = ResRef(_, r))
+                                  \* under v0 globally-shared chain
+                                  \* refIds when the cap is a Promise.
+                  /\ LocalRef(self, r).kind \in
+                         {"LocalPromise", "RemotePromise"}} :
             /\ EnableHandoff
             /\ EnableHandoffInitiate
             /\ self # recipient
-            /\ LocalRef(self, srcRef).kind = "RemoteTarget"
+            \* Phase B (notes/path-changes.md §3.9): allow gifting a
+            \* RemotePromise cap as well as a RemoteTarget.  The wire
+            \* shape is identical (op:deposit-gift to capHost +
+            \* op:resolve with desc:handoff-give to recipient); the
+            \* only difference is that the target host's pre-minted
+            \* LocalPromise(pw) resolves to a LocalPromise on withdraw
+            \* (intra-vat shortening cascade) instead of a LocalTarget.
+            /\ LocalRef(self, srcRef).kind \in {"RemoteTarget", "RemotePromise"}
             /\ LET srcEntry == LocalRef(self, srcRef)
-                   targetHost == srcEntry.targetPeer
-                   targetLocalRef == srcEntry.targetRefId
+                   targetHost ==
+                       IF srcEntry.kind = "RemoteTarget"
+                       THEN srcEntry.targetPeer
+                       ELSE srcEntry.resolverPeer
+                   targetLocalRef ==
+                       IF srcEntry.kind = "RemoteTarget"
+                       THEN srcEntry.targetRefId
+                       ELSE srcEntry.resolverRefId
                    gid == LocalNextGiftId(self)
                    pw == nextRefId
                    targetRefIdToSend ==
@@ -1774,6 +2169,7 @@ Next ==
     \/ ProcessHold
     \/ SendTargetFlushProbe
     \/ SendOpResolveAfterFlush
+    \/ RepropagatePromiseShorten
     \/ Listen
     \/ HandoffInitiate
 
@@ -1788,6 +2184,7 @@ Fairness ==
     /\ WF_vars(ProcessPending)
     /\ WF_vars(SendTargetFlushProbe)
     /\ WF_vars(SendOpResolveAfterFlush)
+    /\ WF_vars(RepropagatePromiseShorten)
     /\ WF_vars(ProcessHold)
     /\ WF_vars(Listen)
     /\ WF_vars(HandoffInitiate)

@@ -79,19 +79,23 @@ ResRef(peer, refId) ==
    goes directly "idle" -> "acked" without emitting any probe (no
    cross-vat hop to flush). *)
 MkLocalPromise(queue, listeners, resolution, flushPending,
-               notified, flushPhase) ==
+               notified, flushPhase, repropNotified, pipelinedListeners) ==
     [kind |-> "LocalPromise",
      queue |-> queue,
      listeners |-> listeners,
      resolution |-> resolution,
      flushPending |-> flushPending,
      notified |-> notified,
-     flushPhase |-> flushPhase]
+     flushPhase |-> flushPhase,
+     repropNotified |-> repropNotified,
+     pipelinedListeners |-> pipelinedListeners]
 
-(* `fresh` is the sticky bit modelling e-on-java's RemotePromiseHandler.
-   isFresh (set TRUE at construction, cleared FALSE the first time
-   anything is pipelined through this RemotePromise's resolver wire).
-   Consulted by the EJavaFlush fast path: a fresh RemotePromise can
+(* `fresh` is the sticky bit on a *local* RemotePromise presence only
+   (e-on-java RemotePromiseHandler.myFreshFlag / EProxyHandler.isFresh).
+   TRUE at construction; cleared FALSE the first time this peer pipelines
+   anything through that imported promise (wire send or local hold buffer).
+   Not stored on the resolver's paired LocalPromise and never read
+   cross-vat.  Consulted by the EJavaFlush fast path: a fresh RemotePromise can
    commit to the post-resolution path immediately, with no end-to-end
    flush sentinel, because no in-flight or downstream-buffered message
    could race the new path.  See the long "EJavaFlush protocol" block
@@ -132,7 +136,9 @@ RefEntryType(Messages) ==
           resolution: ResolutionType,
           flushPending: SUBSET Peers,
           notified: BOOLEAN,
-          flushPhase: FlushPhases]
+          flushPhase: FlushPhases,
+          repropNotified: BOOLEAN,
+          pipelinedListeners: SUBSET Peers]
     \cup [kind: {"RemotePromise"},
           resolverPeer: Peers,
           resolverRefId: RefIds,
@@ -157,7 +163,7 @@ MkChainRefs(h, listenersFn) ==
                  ELSE MkRemoteTarget(h[r], r)
             ELSE IF h[r] = p
             THEN MkLocalPromise(<< >>, listenersFn[r], ResNone, {},
-                                FALSE, "idle")
+                                FALSE, "idle", FALSE, {})
             ELSE MkRemotePromise(h[r], r, ResNone, FALSE, << >>, FALSE, TRUE)
         ]
     ]

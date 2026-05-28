@@ -45,6 +45,7 @@ EmptyInitialListeners == TRUE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
+EnableRepropagate == FALSE
 RoutingPolicy == "EJavaFlush"
 DebugTrace == FALSE
 
@@ -78,7 +79,7 @@ Init ==
                             PS!MkLocalTarget
                     [] p = "vatB" /\ r = 1 ->
                             PS!MkLocalPromise(<< >>, {"vatA"},
-                                PS!ResRef("vatC", 2), {}, TRUE, "idle")
+                                PS!ResRef("vatC", 2), {}, TRUE, "idle", FALSE, {})
                     [] p = "vatB" /\ r = 2 ->
                             \* fresh = FALSE: vatB has already pipelined
                             \* a forward through ref 2 (pre-staged on
@@ -93,7 +94,7 @@ Init ==
                                 FALSE, << >>, TRUE, TRUE)
                     [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalPromise(<< >>, {"vatB"},
-                                PS!ResRef("vatA", 3), {}, TRUE, "idle")
+                                PS!ResRef("vatA", 3), {}, TRUE, "idle", FALSE, {})
                     [] p = "vatC" /\ r = 3 ->
                             PS!MkRemoteTarget("vatA", 3)
                     [] OTHER -> PS!EntryNone],

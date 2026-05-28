@@ -63,11 +63,22 @@ The model distinguishes two kinds of path change:
     a side effect of every non-terminal `ResolverResolve` in the
     chain MCs.
   - *Inter-vat (distributed):* the new promise is on a different vat.
-    **Not modelled.** Would require a `desc:remote-promise` value
-    variant for `op:resolve` plus propagation of learned downstream
-    resolutions through `RemotePromise.localResolution`. This is the
-    largest tracked future-work item — see
-    [`notes/path-changes.md`](notes/path-changes.md) §1.2.b and §3.1.
+    **Two-party form modelled (Phase A) + three-party form modelled
+    (Phase B) + 2-party flush extensions (Phase C).**
+    `ResolverResolve` emits
+    `op:resolve(refId, desc:import-promise|desc:export-promise)` when
+    the resolution is promise-shaped and every listener can receive
+    it two-party (across `NaivePromiseResolution`, `ShorteningUnsafe`,
+    and `EJavaFlush`; `OpFlushProtocol` runs its full flush handshake
+    around the promise-shaped resolution). When listeners are
+    three-party, the resolver fires `desc:handoff-give` carrying a
+    Promise cap (3PHO), gated to `NaivePromiseResolution` /
+    `ShorteningUnsafe`, `EJavaFlush` (witness-gated), and
+    `OpFlushProtocol` (always `op:flush` listeners first; no `fresh`
+    gate). Phase D adds `RepropagatePromiseShorten` and Tribble MCs.
+    See
+    [`notes/path-changes.md`](notes/path-changes.md) §1.2.b, §3.1,
+    §3.8, §3.9, and §3.10.
 
 The word "shortening" in the policy name `ShorteningUnsafe` follows
 the older OCapN-colloquial usage where "shortening" denotes the
@@ -157,9 +168,12 @@ What the spec currently covers:
 
 What's deferred — see [`notes/path-changes.md`](notes/path-changes.md):
 
-- Inter-vat distributed promise shortening (`desc:remote-promise`
-  variant + propagation of learned downstream resolutions).
-- Tribble four-way scenario MC (requires the above).
+- Inter-vat distributed promise shortening Phases A–D are modelled
+  (flush propagation is per-node local conditions only; no
+  cross-node `op:flush` relay). Tribble MCs:
+  `MC_EJavaFlush_TribbleFourWay` violates FIFO (faithful
+  `DelayedRedirector`); `MC_OpFlushProtocol_TribbleFourWay` passes
+  (see `notes/path-changes.md` §3.11).
 - Per-peer refId namespaces (mechanical translation, currently global).
 - Ref-scoped flush drainage (currently whole-channel-empty).
 - Multi-sender FIFO MCs.
@@ -180,9 +194,17 @@ ocapn-tla-plus/
 │   ├── MC_NoPromiseResolution.tla / .cfg
 │   ├── MC_NoPromiseResolution_3Chain.tla / .cfg
 │   ├── MC_NaivePromiseResolution.tla / .cfg
+│   ├── MC_NaivePromiseResolution_PromiseShorten.tla / .cfg  (Phase A: 2-party violation)
+│   ├── MC_NaivePromiseResolution_3Chain.tla / .cfg          (Phase B: 3-party violation)
 │   ├── MC_ShorteningUnsafe_4Chain.tla / .cfg
 │   ├── MC_EJavaFlush_3Chain.tla / .cfg
+│   ├── MC_EJavaFlush_3Chain_PromiseShorten.tla / .cfg       (Phase C: 2-party EJava pass)
+│   ├── MC_EJavaFlush_3Chain_PromiseShorten_3Party.tla / .cfg (Phase C: 3-party EJava pass)
 │   ├── MC_EJavaFlush_4Chain.tla / .cfg
+│   ├── MC_EJavaFlush_TribbleFourWay.tla / .cfg              (Phase D: Tribble, expect violation)
+│   ├── MC_OpFlushProtocol_3Chain_PromiseShorten.tla / .cfg  (Phase C: 2-party OpFlush pass)
+│   ├── MC_OpFlushProtocol_3Chain_PromiseShorten_3Party.tla / .cfg (Phase C: 3-party OpFlush pass)
+│   ├── MC_OpFlushProtocol_TribbleFourWay.tla / .cfg         (Phase D: Tribble, expect pass)
 │   ├── MC_OpFlushProtocol_4Chain.tla / .cfg
 │   ├── MC_SubscribeAfterResolve.tla / .cfg       (op:listen subscription)
 │   ├── MC_TerminalHandoff_Baseline.tla / .cfg    (3PHO baseline)
@@ -206,7 +228,9 @@ ocapn-tla-plus/
 │   ├── Unit_EJavaFlush_RefScopedEmbargo.tla / .cfg
 │   ├── Unit_EJavaFlush_EmbargoFires.tla / .cfg       (positive witness: violation expected)
 │   ├── Unit_EJavaFlush_HandoffChainProbe.tla / .cfg  (joint embargo+probe witness: violation expected)
-│   └── Unit_WireDesc_DescriptorChoice.tla / .cfg     (import/export/handoff wire contract)
+│   ├── Unit_WireDesc_DescriptorChoice.tla / .cfg     (import/export/handoff wire contract)
+│   ├── Unit_PromiseShorten_TwoParty.tla / .cfg       (Phase A two-party promise emission: violation expected)
+│   └── Unit_PromiseShorten_ThreeParty.tla / .cfg     (Phase B three-party promise-cap handoff: violation expected)
 ├── notes/
 │   ├── path-changes.md                           (terminology + tracked future work)
 │   ├── flush-protocols.md                        (wire-level protocol reference)

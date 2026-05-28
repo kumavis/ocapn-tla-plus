@@ -75,6 +75,7 @@ EmptyInitialListeners == TRUE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
+EnableRepropagate == FALSE
 RoutingPolicy == "EJavaFlush"
 DebugTrace == FALSE
 
@@ -112,7 +113,7 @@ Init ==
                             \* op:resolve(desc:handoff-give) below is the
                             \* in-flight notification.
                             PS!MkLocalPromise(<< >>, {"vatA"},
-                                PS!ResRef("vatC", 2), {}, TRUE, "idle")
+                                PS!ResRef("vatC", 2), {}, TRUE, "idle", FALSE, {})
                     [] p = "vatB" /\ r = 2 ->
                             \* vatB's RemoteTarget pointing at the third
                             \* party vatC.  Required so vatB's resolution

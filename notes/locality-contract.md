@@ -176,10 +176,18 @@ explicitly forbidden and **do not appear** anywhere in the spec:
   rides the same FIFO channel as previously-pipelined sends, so by
   the time the ack returns, the recipient has actually processed
   everything that was queued behind the probe.
-- `vats[other].refs[_]` for any `other` that is not the actor. The
-  `from` variable in `ReceiveNetwork` is never used to read `from`'s
-  ref table; it appears only as a channel index and as the sender's
-  identity carried in the message header.
+- `vats[other].refs[_]` for any `other` that is not the actor (e.g.
+  reading a listener's `RemotePromise.fresh` to gate resolver flush).
+  **EJavaFlush** 3-party witness instead uses `pipelinedListeners` on
+  the resolver's own `LocalPromise` (the export side of the pair).  Each
+  listener's `fresh` lives only on its local `RemotePromise` import and
+  is cleared when that listener pipelines (`MarkRefNonFresh` on wire or
+  hold).  The resolver records the listener in `pipelinedListeners` when
+  wire traffic from that listener arrives — evidence that the import was
+  used, not a cross-vat read of `fresh`.
+- Using `from` in `ReceiveNetwork` to read `from`'s ref table; `from`
+  appears only as a channel index and as the sender identity in the
+  message header.
 - Mutating `vats[other].gifts[_][_]` or `vats[other].nextGiftId`
   for any `other` that is not the actor. Because every write is of
   the form `[vats EXCEPT ![self]... = ...]`, this is enforced

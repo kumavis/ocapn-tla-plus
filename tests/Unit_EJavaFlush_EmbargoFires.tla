@@ -81,6 +81,7 @@ EmptyInitialListeners == TRUE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
+EnableRepropagate == FALSE
 RoutingPolicy == "EJavaFlush"
 DebugTrace == FALSE
 
@@ -125,7 +126,7 @@ Init ==
                             \* listener {vatA} already notified.  Marking
                             \* notified = TRUE keeps ResolverResolve disabled.
                             PS!MkLocalPromise(<< >>, {"vatA"},
-                                PS!ResRef("vatC", 2), {}, TRUE, "idle")
+                                PS!ResRef("vatC", 2), {}, TRUE, "idle", FALSE, {})
                     [] p = "vatB" /\ r = 2 ->
                             \* vatB's view of p2; resolver vatC.  Unresolved
                             \* and un-embargoed at Init.  fresh = FALSE: the
@@ -148,7 +149,7 @@ Init ==
                             \* channels[vatC][vatB], paired with the
                             \* deposit-gift on channels[vatC][vatA]).
                             PS!MkLocalPromise(<< >>, {"vatB"},
-                                PS!ResRef("vatA", 3), {}, TRUE, "idle")
+                                PS!ResRef("vatA", 3), {}, TRUE, "idle", FALSE, {})
                     [] p = "vatC" /\ r = 3 ->
                             PS!MkRemoteTarget("vatA", 3)
                     [] OTHER -> PS!EntryNone],

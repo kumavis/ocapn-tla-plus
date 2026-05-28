@@ -35,6 +35,7 @@ EmptyInitialListeners == TRUE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == TRUE
+EnableRepropagate == FALSE
 RoutingPolicy == "NoPromiseResolution"
 DebugTrace == FALSE
 
@@ -59,7 +60,7 @@ Init ==
                [r \in (1..MaxRefId) |->
                   CASE p = "vatA" /\ r = 1 ->
                           PS!MkLocalPromise(<< >>, {"vatB"},
-                              PS!ResRef("vatA", 2), {}, FALSE, "idle")
+                              PS!ResRef("vatA", 2), {}, FALSE, "idle", FALSE, {})
                     [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                     [] p = "vatB" /\ r = 1 ->

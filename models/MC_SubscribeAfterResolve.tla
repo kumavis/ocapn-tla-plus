@@ -38,6 +38,7 @@ EmptyInitialListeners == TRUE
 EnableDynamicListen == TRUE
 EnableHandoff == FALSE
 EnableHandoffInitiate == FALSE
+EnableRepropagate == FALSE
 MaxGifts == 0
 RoutingPolicy == "NaivePromiseResolution"
 DebugTrace == FALSE

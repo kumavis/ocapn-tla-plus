@@ -82,9 +82,17 @@ SCENARIO_TESTS=(
   "MC_NoPromiseResolution|pass"
   "MC_NoPromiseResolution_3Chain|pass"
   "MC_NaivePromiseResolution|violation"
+  "MC_NaivePromiseResolution_PromiseShorten|violation"
+  "MC_NaivePromiseResolution_3Chain|violation"
   "MC_ShorteningUnsafe_4Chain|violation"
   "MC_EJavaFlush_3Chain|pass"
+  "MC_EJavaFlush_3Chain_PromiseShorten|pass"
+  "MC_EJavaFlush_3Chain_PromiseShorten_3Party|pass"
   "MC_EJavaFlush_4Chain|pass"
+  "MC_OpFlushProtocol_3Chain_PromiseShorten|pass"
+  "MC_OpFlushProtocol_3Chain_PromiseShorten_3Party|pass"
+  "MC_EJavaFlush_TribbleFourWay|violation"
+  "MC_OpFlushProtocol_TribbleFourWay|pass"
   "MC_OpFlushProtocol_4Chain|pass"
   "MC_SubscribeAfterResolve|pass"
   "MC_TerminalHandoff_Baseline|pass"
@@ -108,6 +116,8 @@ UNIT_TESTS=(
   "Unit_EJavaFlush_EmbargoFires|violation"
   "Unit_EJavaFlush_HandoffChainProbe|violation"
   "Unit_WireDesc_DescriptorChoice|pass"
+  "Unit_PromiseShorten_TwoParty|violation"
+  "Unit_PromiseShorten_ThreeParty|violation"
 )
 
 FAIL=0
