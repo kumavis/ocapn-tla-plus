@@ -64,7 +64,7 @@ PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 \* Debug-only forced violation: trips when the OpFlushProtocol round
 \* (op:flush -> op:flush-ack -> op:e-flush-probe -> op:e-flush-probe-ack

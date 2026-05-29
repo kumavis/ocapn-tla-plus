@@ -140,7 +140,7 @@ EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 (* Witness predicates -- factored out for clarity in the invariant. *)
 RecipientEmbargoed ==

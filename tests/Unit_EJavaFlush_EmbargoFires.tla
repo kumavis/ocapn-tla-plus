@@ -206,7 +206,7 @@ EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 (* The witness: vats["vatB"].refs[2].embargo MUST flip to TRUE on the
    chainEmbargo branch of the handoff-give receive.  Negating that with an

@@ -97,7 +97,7 @@ NoMessageLost_MC == PS!NoMessageLost
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 \* Behavioral check: at quiescence, gift slot is cleared (the legitimate
 \* withdraw from vatB succeeded) and the wrong-recipient withdraw never

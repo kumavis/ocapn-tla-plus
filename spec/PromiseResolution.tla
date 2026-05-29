@@ -2201,8 +2201,11 @@ TypeOK ==
     /\ host \in [ChainRefs -> Peers]
 
 ----------------------------------------------------------------------------
+(* Currently HeadPeer is the only originator of ref-1 op:deliver-only, so
+   only the (HeadPeer, 1) pair has non-empty `seqs`.  Multi-sender FIFO
+   coverage is tracked in notes/path-changes.md §3.4. *)
 EndToEndRefFIFO ==
-    \A sender \in Peers, ref \in {1} :
+    \A sender \in {HeadPeer}, ref \in {1} :
         LET seqs ==
             SelectSeq(delivered,
                 LAMBDA d : d.sender = sender /\ d.ref = ref)
@@ -2242,7 +2245,12 @@ WireDescriptorContract ==
                (msg.value.desc # "desc:handoff-give") \/
                msg.value.targetHost \notin {sender, receiver}
 
-TwoPartyWireDescsOnly ==
+(* Every op:resolve in flight carries a known descriptor: either
+   desc:handoff-give (3-party introduction) or one of the import/export
+   TargetWireDescs (2-party introduction).  Despite the historical name,
+   this does NOT restrict to 2-party; that constraint is in
+   WireDescriptorContract above. *)
+OnlyKnownResolveDescriptors ==
     \A sender, receiver \in Peers :
         \A i \in 1..Len(channels[sender][receiver]) :
             LET msg == channels[sender][receiver][i]

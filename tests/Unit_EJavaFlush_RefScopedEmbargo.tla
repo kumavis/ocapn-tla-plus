@@ -173,7 +173,7 @@ EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 (* The discriminating safety invariant: with the ref-parameterized
    chainEmbargo gate (chainFresh consults the per-ref fresh bit, not any

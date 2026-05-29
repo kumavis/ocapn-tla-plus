@@ -238,7 +238,7 @@ that drives two `HeadPeer`s into the same chain would close the gap.
 
 `spec/PromiseResolution.tla` defines two global invariants over
 `channels`: `WireDescriptorContract` (no `desc:handoff-give` with
-`targetHost \in {sender, receiver}`) and `TwoPartyWireDescsOnly` (every
+`targetHost \in {sender, receiver}`) and `OnlyKnownResolveDescriptors` (every
 non-handoff `op:resolve` descriptor is in `TargetWireDescs`). They are
 currently checked only by the static-state `Unit_WireDesc_DescriptorChoice`
 unit (`Spec == Init /\ [][Stutter]_vars`, 1 distinct state). Every

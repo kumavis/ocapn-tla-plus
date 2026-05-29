@@ -64,7 +64,7 @@ PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 \* Debug-only forced violation: see MC_EJavaFlush_3Chain.tla for the
 \* rationale; identical predicate, also scoped to chain refs only.

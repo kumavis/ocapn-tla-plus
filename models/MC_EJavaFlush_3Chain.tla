@@ -63,7 +63,7 @@ PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 \* Debug-only forced violation: trips when the EJavaFlush slow path has
 \* completed for at least one chain RemotePromise AND every send has

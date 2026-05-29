@@ -82,6 +82,6 @@ NoMessageLost_MC == PS!NoMessageLost
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 EventualDelivery_MC == PS!EventualDelivery
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 ============================================================================

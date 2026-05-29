@@ -99,7 +99,7 @@ Spec == Init /\ [][Stutter]_vars
 
 TypeOK_MC == PS!TypeOK
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 ImportTargetClassified_MC ==
     PS!WireDescMatches("vatC", "vatB", "vatC", "LocalTarget",

@@ -79,7 +79,7 @@ NoMessageLost_MC == PS!NoMessageLost
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 EventualDelivery_MC == PS!EventualDelivery
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 (* The witness: vatB's ResolverResolve at r=1 MUST append
    op:resolve(targetRefId=1, desc:export-promise(refId=2)) on

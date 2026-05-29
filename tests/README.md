@@ -62,7 +62,7 @@ for a third-party introduction).  They pin the chain-form
 
 | MC                                | Topology                                  | What it exercises                                                         |
 |-----------------------------------|-------------------------------------------|---------------------------------------------------------------------------|
-| `Unit_WireDesc_DescriptorChoice`  | 3 peers, statically pre-staged channels   | Sanity check that `desc:import-target` / `desc:export-target` / `desc:handoff-give` are emitted only in the situations the wire contract allows (`WireDescriptorContract`, `TwoPartyWireDescsOnly` and the `*Classified_MC` shape predicates hold on the initial state) |
+| `Unit_WireDesc_DescriptorChoice`  | 3 peers, statically pre-staged channels   | Sanity check that `desc:import-target` / `desc:export-target` / `desc:handoff-give` are emitted only in the situations the wire contract allows (`WireDescriptorContract`, `OnlyKnownResolveDescriptors` and the `*Classified_MC` shape predicates hold on the initial state) |
 
 ## Inter-vat promise shortening
 
