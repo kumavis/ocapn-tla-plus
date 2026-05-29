@@ -100,8 +100,8 @@ Set via the `RoutingPolicy` constant in
   ref-1 sends and post-resolve direct sends race at the terminal.
   Violates `EndToEndRefFIFO` on a 2-chain.
 - **`"ShorteningUnsafe"`** — same shape as Naive, demonstrated on a
-  longer chain (the standard 4-chain witness). Same unguarded path
-  change. Violates `EndToEndRefFIFO`.
+  longer chain (`MC_ShorteningUnsafe_3Chain`: 4 peers, 3 hops). Same
+  unguarded path change. Violates `EndToEndRefFIFO`.
 - **`"EJavaFlush"`** — faithful model of e-on-java's
   `DelayedRedirector`. Subscriber-initiated end-to-end flush: on
   `op:resolve` receipt at listener `L`, the fast path
@@ -173,7 +173,12 @@ What's deferred — see [`notes/path-changes.md`](notes/path-changes.md):
   cross-node `op:flush` relay). Tribble MCs:
   `MC_EJavaFlush_TribbleFourWay` violates FIFO (faithful
   `DelayedRedirector`); `MC_OpFlushProtocol_TribbleFourWay` passes
-  (see `notes/path-changes.md` §3.11).
+  (see `notes/path-changes.md` §3.11).  Note: the OpFlushProtocol
+  Tribble pass is **safety-only**; its `.cfg` omits `EventualDelivery`
+  because per-node flush + re-propagation can stutter under weak
+  fairness while FIFO still holds.  Read it as "no FIFO inversion
+  under any reachable schedule" rather than "every send eventually
+  reaches the terminal".
 - Per-peer refId namespaces (mechanical translation, currently global).
 - Ref-scoped flush drainage (currently whole-channel-empty).
 - Multi-sender FIFO MCs.
@@ -196,7 +201,7 @@ ocapn-tla-plus/
 │   ├── MC_NaivePromiseResolution.tla / .cfg
 │   ├── MC_NaivePromiseResolution_PromiseShorten.tla / .cfg  (Phase A: 2-party violation)
 │   ├── MC_NaivePromiseResolution_3Chain.tla / .cfg          (Phase B: 3-party violation)
-│   ├── MC_ShorteningUnsafe_4Chain.tla / .cfg
+│   ├── MC_ShorteningUnsafe_3Chain.tla / .cfg
 │   ├── MC_EJavaFlush_3Chain.tla / .cfg
 │   ├── MC_EJavaFlush_3Chain_PromiseShorten.tla / .cfg       (Phase C: 2-party EJava pass)
 │   ├── MC_EJavaFlush_3Chain_PromiseShorten_3Party.tla / .cfg (Phase C: 3-party EJava pass)

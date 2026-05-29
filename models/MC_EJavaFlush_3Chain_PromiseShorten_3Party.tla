@@ -5,10 +5,12 @@
 (* Phase C 3-party flush: firePromiseShorten3Party under EJavaFlush is     *)
 (* gated by ListenersWitnessPipelined; chain-form desc:handoff-give takes  *)
 (* the local chainEmbargo + e-flush-probe slow path when fresh=FALSE.      *)
-(* NumMessages=1: a second post-shorten send (NumMessages=2) is the race   *)
-(* exercised by MC_NaivePromiseResolution_3Chain; this MC checks the       *)
-(* 3-party flush path does not break FIFO for the single in-flight send.   *)
-(* Expected: EndToEndRefFIFO_MC PASSES.                                    *)
+(*                                                                         *)
+(* NumMessages = 2 surfaces a real race: the EJavaFlush 3-party flush      *)
+(* path does NOT preserve FIFO for two pipelined ref-1 sends.  Previously *)
+(* NumMessages = 1 hid this since a single delivery has no FIFO surface.   *)
+(* This is a known gap in the 3-party flush; see PR notes for details.    *)
+(* Expected: EndToEndRefFIFO_MC violated.                                  *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -18,7 +20,7 @@ HeadPeer == "vatA"
 ChainLength == 3
 MaxGifts == 2
 MaxRefId == ChainLength + MaxGifts
-NumMessages == 1
+NumMessages == 2
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE

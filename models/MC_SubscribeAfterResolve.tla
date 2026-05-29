@@ -74,4 +74,6 @@ EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
+WireDescriptorContract_MC == PS!WireDescriptorContract
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 ============================================================================

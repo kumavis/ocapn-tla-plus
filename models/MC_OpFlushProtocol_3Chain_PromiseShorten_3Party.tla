@@ -2,10 +2,10 @@
 (***************************************************************************)
 (* 3-party inter-vat promise-to-promise shortening under OpFlushProtocol. *)
 (* Same topology as MC_NaivePromiseResolution_3Chain; Phase C extends    *)
-(* fireOpFlush / probe / post-flush resolve for 3-party promise caps when  *)
-(* ListenersWitnessPipelined holds.  Each peer's flush is local-only.      *)
-(* NumMessages=1 (see MC_EJavaFlush_3Chain_PromiseShorten_3Party).         *)
-(* Expected: EndToEndRefFIFO_MC PASSES.                                    *)
+(* fireOpFlush / probe / post-flush resolve for 3-party promise caps.     *)
+(* Each peer's flush is local-only.  NumMessages = 2 exercises FIFO       *)
+(* across pipelined ref-1 sends.                                          *)
+(* Expected: EndToEndRefFIFO_MC PASSES.                                   *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -15,7 +15,7 @@ HeadPeer == "vatA"
 ChainLength == 3
 MaxGifts == 2
 MaxRefId == ChainLength + MaxGifts
-NumMessages == 1
+NumMessages == 2
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE

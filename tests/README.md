@@ -25,11 +25,10 @@ are exercised by the policy MCs in `models/`).
 
 | MC                                 | Topology                          | What it exercises                                 |
 |------------------------------------|-----------------------------------|---------------------------------------------------|
-| `Unit_Listen_Subscribe_Unresolved` | 1 vat hosts p_1, T (NaivePromise) | `op:listen` arrives before resolution; listener installed; eventual `op:resolve` fires |
-| `Unit_Listen_Subscribe_AfterResolve` | 1 vat hosts p_1, T (NaivePromise) | `op:listen` arrives after resolution; immediate `op:resolve` reply |
+| `Unit_Listen_Subscribe_Unresolved` | 1 vat hosts p_1, T (NaivePromise) | `op:listen` exhaustively explored both before and after resolution; covers eventual / immediate `op:resolve` reply.  After-resolve case is also exercised by `MC_SubscribeAfterResolve`. |
 
-Both use `EmptyInitialListeners = TRUE` + `EnableDynamicListen = TRUE`
-so the only listener registration is via the `Listen` action.
+Uses `EmptyInitialListeners = TRUE` + `EnableDynamicListen = TRUE` so
+the only listener registration is via the `Listen` action.
 
 ## Opaque three-party handoff (3PHO)
 
