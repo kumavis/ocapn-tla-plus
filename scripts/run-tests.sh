@@ -97,6 +97,7 @@ SCENARIO_TESTS=(
   "MC_SubscribeAfterResolve|pass"
   "MC_SubscribeAfterResolve_ThreeParty|pass"
   "MC_EJavaFlush_SameVatListener|pass"
+  "MC_OpFlushProtocol_SameVatListener|pass"
   "MC_TerminalHandoff_Baseline|pass"
   "MC_TerminalHandoff_WithForwarder|violation"
   "MC_ConcurrentHandoffs|pass"

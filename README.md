@@ -224,8 +224,8 @@ ocapn-tla-plus/
 │   ├── Unit_LocalShorten_Cascade.tla / .cfg      (intra-vat shortening)
 │   ├── Unit_RemoteTarget_Forward.tla / .cfg
 │   ├── Unit_Pipelining_On_Promise.tla / .cfg
-│   ├── Unit_Listen_Subscribe_Unresolved.tla / .cfg
-│   ├── Unit_Listen_Subscribe_AfterResolve.tla / .cfg
+│   ├── Unit_Listen_Subscribe_Unresolved.tla / .cfg     (covers both
+│                                  before- and after-resolve interleavings)
 │   ├── Unit_Handoff_DepositWithdraw.tla / .cfg
 │   ├── Unit_Handoff_Pipeline.tla / .cfg
 │   ├── Unit_Handoff_Pipeline_BeforeDeposit.tla / .cfg
