@@ -26,6 +26,7 @@ EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
+EnableShorten == FALSE
 RoutingPolicy == "EJavaFlush"
 
 CONSTANT DebugTrace

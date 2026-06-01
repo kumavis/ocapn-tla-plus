@@ -25,13 +25,14 @@ EXTENDS TLC, Naturals, Sequences
 Peers == {"vatA", "vatB"}
 HeadPeer == "vatA"
 ChainLength == 3
-MaxRefId == ChainLength
+MaxRefId == ChainLength + 6  \* +6 for flush-minted refIds (Ridley)
 NumMessages == 2
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == FALSE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
+EnableShorten == TRUE
 MaxGifts == 0
 RoutingPolicy == "OpFlushProtocol"
 DebugTrace == FALSE

@@ -29,6 +29,7 @@ EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
+EnableShorten == FALSE
 RoutingPolicy == "EJavaFlush"
 
 CONSTANT DebugTrace  \* set in .cfg: FALSE for normal run, TRUE for _Debug.cfg

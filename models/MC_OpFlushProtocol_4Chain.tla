@@ -22,13 +22,14 @@ Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
 HeadPeer == "vatA"
 ChainLength == 4
 MaxGifts == 3
-MaxRefId == ChainLength + MaxGifts
+MaxRefId == ChainLength + MaxGifts + 6  \* +6 for flush-minted refIds (Ridley)
 NumMessages == 3
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
+EnableShorten == TRUE
 RoutingPolicy == "OpFlushProtocol"
 
 CONSTANT DebugTrace  \* set in .cfg: FALSE for normal run, TRUE for _Debug.cfg
@@ -76,14 +77,14 @@ OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 \* (pipelining -> op:flush -> embargo+ack-back -> resolver drains queue
 \* -> SendTargetFlushProbe -> probe traverses chain -> probe-ack lifts
 \* flushPhase -> SendOpResolveAfterFlush -> ProcessHold drains pending).
+\* Under faithful Ridley op:flush, OpFlushProtocol no longer has a
+\* multi-phase resolver-side state machine.  The slow-path debug
+\* witness now uses the shortener-side flushSent bit on a RemotePromise.
 NoSlowPathCompletion_MC ==
     ~( /\ Len(delivered) = NumMessages
        /\ \E p \in Peers : \E r \in 1..MaxRefId :
             /\ r \in {ri \in 1..MaxRefId : vats[p].refs[ri] # PS!EntryNone}
-            /\ vats[p].refs[r].kind = "LocalPromise"
-            /\ vats[p].refs[r].resolution # PS!ResNone
-            /\ vats[p].refs[r].flushPhase = "acked"
-            /\ vats[p].refs[r].notified
-            /\ vats[p].refs[r].flushPending = {} )
+            /\ vats[p].refs[r].kind = "RemotePromise"
+            /\ vats[p].refs[r].flushSent )
 
 ============================================================================

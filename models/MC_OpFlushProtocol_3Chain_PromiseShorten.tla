@@ -57,13 +57,14 @@ Peers == {"vatA", "vatB"}
 HeadPeer == "vatA"
 ChainLength == 3
 MaxGifts == 1
-MaxRefId == ChainLength + MaxGifts
+MaxRefId == ChainLength + MaxGifts + 6  \* +6 for flush-minted refIds (Ridley)
 NumMessages == 2
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
+EnableShorten == TRUE
 RoutingPolicy == "OpFlushProtocol"
 
 CONSTANT DebugTrace  \* set in .cfg

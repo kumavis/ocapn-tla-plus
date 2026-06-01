@@ -134,7 +134,8 @@ CONSTANT
     EnableDynamicListen,
     EnableHandoff,
     EnableHandoffInitiate,
-    EnableRepropagate
+    EnableRepropagate,
+    EnableShorten
 
 ASSUME NumMessages \in Nat \ {0}
 ASSUME RoutingPolicy \in {
@@ -150,6 +151,7 @@ ASSUME EnableDynamicListen \in BOOLEAN
 ASSUME EnableHandoff \in BOOLEAN
 ASSUME EnableHandoffInitiate \in BOOLEAN
 ASSUME EnableRepropagate \in BOOLEAN
+ASSUME EnableShorten \in BOOLEAN
 
 ----------------------------------------------------------------------------
 (* Wire messages. *)
@@ -166,13 +168,21 @@ OpResolve(targetRefId, value) ==
      targetRefId |-> targetRefId,
      value |-> value]
 
-OpFlush(refId) ==
+(* op:flush (Ridley shape, ocapn#11; see notes/flush-protocols.md §9).
+   Sent by the would-be shortener to the peer holding the resolver of
+   the promise being shortened.  Carries:
+     - toDescRefId   : refId of the desc:export referencing the
+                       resolver `r` on the receiver.
+     - answerPos     : positive refId at which the sender expects the
+                       flush response promise to land.
+     - resolveMeRefId: refId of the desc:import-object the sender
+                       exports to receive the response (the new
+                       resolver `r'`). *)
+OpFlush(toDescRefId, answerPos, resolveMeRefId) ==
     [op |-> "op:flush",
-     refId |-> refId]
-
-OpFlushAck(refId) ==
-    [op |-> "op:flush-ack",
-     refId |-> refId]
+     toDescRefId |-> toDescRefId,
+     answerPos |-> answerPos,
+     resolveMeRefId |-> resolveMeRefId]
 
 (* v0 globally-shared refIds: subscriber and resolver name the same logical
    refId, so op:listen carries only one. *)
@@ -368,8 +378,8 @@ Messages ==
     { OpDeliverOnly(HeadPeer, 1, n, r) :
         n \in 1..NumMessages, r \in RefIds }
     \cup { OpResolve(r, v) : r \in RefIds, v \in DescValues }
-    \cup { OpFlush(r) : r \in RefIds }
-    \cup { OpFlushAck(r) : r \in RefIds }
+    \cup { OpFlush(td, ap, rm) :
+            td \in RefIds, ap \in RefIds, rm \in RefIds }
     \cup { OpListen(r) : r \in RefIds }
     \cup { OpEFlushProbe(o, r0, r) :
             o \in Peers, r0 \in RefIds, r \in RefIds }
@@ -851,25 +861,6 @@ ListenersWitnessPipelined(resolver, promiseRefId, listeners) ==
 CoTerminalPromiseHost ==
     host[ChainLength] = host[ChainLength - 1]
 
-(* OpFlush promise-shaped notify (re-propagation): 2-party or 3-party
-   handoff-give; no listener `fresh` gate. *)
-OpFlushCoversPromise(self, res, listeners) ==
-    /\ IsResolutionPromise(self, res)
-    /\ \/ AllListenersTwoParty(self, res, listeners)
-       \/ \E l \in listeners :
-            NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
-
-(* OpFlush ResolverResolve / probe / post-flush: same, but 3-party
-   handoff-give only at head r=1 on co-terminal topologies (state-space;
-   MC_OpFlushProtocol_4Chain).  Still no `fresh` gate. *)
-OpFlushResolverCoversPromise(self, r, res, listeners) ==
-    /\ IsResolutionPromise(self, res)
-    /\ \/ AllListenersTwoParty(self, res, listeners)
-       \/ /\ \E l \in listeners :
-                NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
-          /\ r = 1
-          /\ CoTerminalPromiseHost
-
 (* Fold listener notifications into outboxes.  Two-party resolutions carry
    import/export descriptors; third-party resolutions emit deposit-gift +
    desc:handoff-give (one gift per listener).  Locality: only appends on
@@ -995,34 +986,30 @@ ResolverResolve ==
                            {"NaivePromiseResolution", "ShorteningUnsafe"}
                        \/ /\ r = 1
                           /\ CoTerminalPromiseHost)
+               \* Under faithful Ridley (notes/flush-protocols.md §9),
+               \* OpFlushProtocol's resolver does NOT push op:flush
+               \* downstream.  The resolver immediately notifies
+               \* listeners via op:resolve.  If a listener wants to
+               \* shorten itself out of the chain, it later fires
+               \* InitiateFlush against its own RemotePromise.  So
+               \* OpFlushProtocol's fireOpResolveNow gate matches the
+               \* other "push-immediately" policies (Naive / Shortening
+               \* / EJavaFlush).
                fireOpResolveNow ==
                    \/ /\ isTarget
                       /\ listeners # {}
                       /\ RoutingPolicy \in
                              {"NaivePromiseResolution",
                               "ShorteningUnsafe",
-                              "EJavaFlush"}
+                              "EJavaFlush",
+                              "OpFlushProtocol"}
                    \/ firePromiseShorten
                    \/ firePromiseShorten3Party
-               \* Phase C: OpFlushProtocol fires fireOpFlush for
-               \* promise-shaped resolutions too, with the same
-               \* op:flush -> op:flush-ack -> SendTargetFlushProbe ->
-               \* SendOpResolveAfterFlush handshake.  The probe routes
-               \* through Route which cascades through promise hops
-               \* (queue at unresolved LocalPromise hops; the chain
-               \* eventually settles and the probe drains).
-               fireOpFlush ==
-                   /\ listeners # {}
-                   /\ RoutingPolicy = "OpFlushProtocol"
-                   /\ \/ isTarget
-                      \/ OpFlushResolverCoversPromise(self, r, res, listeners)
                needsHandoff ==
                    /\ \E l \in listeners :
                         NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
                    /\ \/ isTarget
                       \/ firePromiseShorten3Party
-                      \/ /\ RoutingPolicy = "OpFlushProtocol"
-                         /\ isPromise
                notify ==
                    AppendResolveNotifications(channels, self, r, res,
                        listeners, LocalNextGiftId(self), nextRefId)
@@ -1048,14 +1035,6 @@ ResolverResolve ==
                           /\ IF needsHandoff
                              THEN nextRefId' = notify.pwNext
                              ELSE UNCHANGED nextRefId
-                   [] fireOpFlush
-                       -> /\ vats' =
-                              [vats EXCEPT
-                                  ![self].refs[r].resolution = res,
-                                  ![self].refs[r].flushPending = listeners]
-                          /\ channels' =
-                              AppendToManyOutboxes(channels, self, listeners,
-                                  OpFlush(r))
                    [] OTHER
                        -> /\ vats' =
                               [vats EXCEPT ![self].refs[r].resolution = res]
@@ -1067,143 +1046,7 @@ ResolverResolve ==
                        actor |-> self,
                        refId |-> r,
                        resKind |-> IF isTarget THEN "Target" ELSE "Promise",
-                       notified |-> fireOpResolveNow,
-                       flushed |-> fireOpFlush])
-
-----------------------------------------------------------------------------
-(* SendTargetFlushProbe: at resolver R holding a target-bearing            *)
-(* LocalPromise whose listeners have all acked the op:flush round (i.e.    *)
-(* flushPending = {}), emit an op:e-flush-probe through R's chain to the   *)
-(* eventual target.  The probe rides channels[R][targetPeer] AFTER all of  *)
-(* R's previously-forwarded op:deliver-only sends (channel FIFO); the      *)
-(* ack returns directly from target -> R and advances R's LocalPromise     *)
-(* flushPhase from "out" to "acked" so SendOpResolveAfterFlush can fire.   *)
-(*                                                                         *)
-(* Preconditions:                                                          *)
-(*   - resolution set, target-bearing                                      *)
-(*   - flushPending = {}     (all listener acks already received)          *)
-(*   - notified = FALSE      (op:resolve not yet sent)                     *)
-(*   - flushPhase = "idle"   (probe not yet sent for this round)           *)
-(*   - resolver's own LocalPromise.queue is empty (all pre-flush local    *)
-(*     pipelined sends forwarded)                                          *)
-(*                                                                         *)
-(* This action is enabled exactly once per resolution: it transitions      *)
-(* flushPhase "idle" -> "out" (or directly "idle" -> "acked" for the      *)
-(* local-target shortcut), and the receive of op:e-flush-probe-ack         *)
-(* transitions "out" -> "acked", which enables SendOpResolveAfterFlush. *)
-
-SendTargetFlushProbe ==
-    \E self \in Peers : \E r \in DOMrefs(self) :
-        /\ RoutingPolicy = "OpFlushProtocol"
-        /\ LocalRef(self, r).kind = "LocalPromise"
-        /\ LocalRef(self, r).resolution # ResNone
-        \* Phase C: probe also fires for promise-shaped resolutions
-        \* (notes/path-changes.md §3.10).  Route follows the cascade to
-        \* the actual current next-hop wire target; queue / hold tags
-        \* mean the chain has an unresolved hop downstream and the
-        \* action waits (the chain will eventually advance).
-        \* Promise branch matches fireOpFlush (2-party or 3-party handoff).
-        /\ \/ IsResolutionTarget(self, LocalRef(self, r).resolution)
-           \/ OpFlushResolverCoversPromise(self, r, LocalRef(self, r).resolution,
-                LocalRef(self, r).listeners)
-        /\ LocalRef(self, r).flushPending = {}
-        /\ ~LocalRef(self, r).notified
-        /\ LocalRef(self, r).flushPhase = "idle"
-        /\ Len(LocalRef(self, r).queue) = 0
-        /\ LET entry == LocalRef(self, r)
-               res == entry.resolution
-               route == Route(self, res.refId)
-               probe ==
-                   IF route.tag = "wire"
-                   THEN OpEFlushProbe(self, r, route.refId)
-                   ELSE OpEFlushProbe(self, r, res.refId)
-                            \* unreachable for tag = deliver
-           IN
-              \* Route classifies the current next-hop dispatch:
-              \*   deliver -> chain bottoms out at a LocalTarget on
-              \*              self; no cross-vat flush needed.
-              \*   wire    -> emit probe to route.peer at route.refId;
-              \*              FIFO carries it behind prior forwards.
-              \*   queue/hold -> chain has an unresolved promise hop
-              \*              or an embargoed RemotePromise; action
-              \*              disabled, will re-fire when the hop
-              \*              clears.
-              /\ route.tag \in {"deliver", "wire"}
-              /\ (CASE route.tag = "deliver"
-                       -> /\ vats' =
-                              [vats EXCEPT
-                                  ![self].refs[r].flushPhase = "acked"]
-                          /\ UNCHANGED channels
-                          /\ Mark([name |-> "SendTargetFlushProbe",
-                                   actor |-> self, refId |-> r,
-                                   targetPeer |-> self,
-                                   phase |-> "acked"])
-                 [] route.tag = "wire"
-                       -> /\ vats' =
-                              [vats EXCEPT
-                                  ![self].refs[r].flushPhase = "out"]
-                          /\ channels' =
-                              AppendToOutbox(channels, self, route.peer, probe)
-                          /\ Mark([name |-> "SendTargetFlushProbe",
-                                   actor |-> self, refId |-> r,
-                                   targetPeer |-> route.peer,
-                                   phase |-> "out"]))
-        /\ UNCHANGED << host, sent, delivered >>
-        /\ HandoffVarsUnchanged
-
-----------------------------------------------------------------------------
-(* Send op:resolve to listeners after the resolver-to-target flush probe   *)
-(* round-trip has completed.  Preconditions:                               *)
-(*   - resolution set, target-bearing                                      *)
-(*   - flushPending = {}     (all listener acks received)                  *)
-(*   - notified = FALSE      (op:resolve not yet sent)                     *)
-(*   - flushPhase = "acked"  (target acked our probe, so all of our        *)
-(*                            forwards on channels[R][target] have been    *)
-(*                            processed at target)                         *)
-(*                                                                         *)
-(* The combination of these preconditions, together with the listeners'    *)
-(* embargo + flush-ack handshake, gives us an end-to-end protocol-level    *)
-(* guarantee that no pre-flush sends can race the post-flush direct path:  *)
-(* every state transition is driven by an explicit protocol message; no    *)
-(* peer reads another peer's channel state.  See                           *)
-(* notes/flush-protocols.md section 9 for the full locality contract. *)
-
-SendOpResolveAfterFlush ==
-    \E self \in Peers : \E r \in DOMrefs(self) :
-        /\ RoutingPolicy = "OpFlushProtocol"
-        /\ LocalRef(self, r).kind = "LocalPromise"
-        /\ LocalRef(self, r).resolution # ResNone
-        \* Phase C: post-flush op:resolve for promise-shaped resolutions.
-        /\ \/ IsResolutionTarget(self, LocalRef(self, r).resolution)
-           \/ OpFlushResolverCoversPromise(self, r, LocalRef(self, r).resolution,
-                LocalRef(self, r).listeners)
-        /\ LocalRef(self, r).flushPending = {}
-        /\ LocalRef(self, r).flushPhase = "acked"
-        /\ ~LocalRef(self, r).notified
-        /\ Len(LocalRef(self, r).queue) = 0
-        /\ LET entry == LocalRef(self, r)
-               res == entry.resolution
-               listeners == entry.listeners \ {self}
-               needsHandoff ==
-                   \E l \in listeners :
-                       NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
-               notify ==
-                   AppendResolveNotifications(channels, self, r, res,
-                       listeners, LocalNextGiftId(self), nextRefId)
-           IN
-              /\ ListenersNotifyable(self, res, listeners)
-              /\ vats' =
-                   [vats EXCEPT
-                       ![self].refs[r].notified = TRUE,
-                       ![self].nextGiftId = notify.gidNext]
-              /\ channels' = notify.channels
-              /\ IF needsHandoff
-                 THEN nextRefId' = notify.pwNext
-                 ELSE UNCHANGED nextRefId
-              /\ UNCHANGED << host, sent, delivered >>
-              /\ Mark([name |-> "SendOpResolveAfterFlush",
-                       actor |-> self,
-                       refId |-> r])
+                       notified |-> fireOpResolveNow])
 
 ----------------------------------------------------------------------------
 (* RepropagatePromiseShorten (Phase D): when `self` learns a downstream     *)
@@ -1248,58 +1091,46 @@ RepropagatePromiseShorten ==
                           {"NaivePromiseResolution",
                            "ShorteningUnsafe",
                            "EJavaFlush"}
+               \* Under faithful Ridley (see ResolverResolve above),
+               \* OpFlushProtocol uses fireOpResolveNow like other
+               \* "push-immediately" policies.  No resolver-pushed
+               \* op:flush.
                fireOpResolveNow ==
                    \/ /\ isTarget
                       /\ RoutingPolicy \in
                              {"NaivePromiseResolution",
                               "ShorteningUnsafe",
-                              "EJavaFlush"}
+                              "EJavaFlush",
+                              "OpFlushProtocol"}
                    \/ firePromiseShorten
                    \/ firePromiseShorten3Party
-               fireOpFlush ==
-                   /\ RoutingPolicy = "OpFlushProtocol"
-                   /\ \/ isTarget
-                      \/ OpFlushCoversPromise(self, res, listeners)
                needsHandoff ==
                    /\ \E l \in listeners :
                         NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
                    /\ \/ isTarget
                       \/ firePromiseShorten3Party
-                      \/ /\ RoutingPolicy = "OpFlushProtocol"
-                         /\ isPromise
                notify ==
                    AppendResolveNotifications(channels, self, chainR, res,
                        listeners, LocalNextGiftId(self), nextRefId)
            IN
               /\ res # ResNone
-              /\ (fireOpResolveNow \/ fireOpFlush)
+              /\ fireOpResolveNow
               \* Defensive: see ResolverResolve.  A 3-party listener
               \* requires EnableHandoff; otherwise suppress the resolve.
               /\ (EnableHandoff
                   \/ ~(\E l \in listeners :
                           NeedsHandoffIntro(self, l,
                               TargetHostPeer(self, res))))
-              /\ (CASE fireOpResolveNow
-                       -> /\ ListenersNotifyable(self, res, listeners)
-                          /\ vats' =
-                              [vats EXCEPT
-                                  ![self].refs[chainR].repropNotified = TRUE,
-                                  ![self].refs[chainR].notified = TRUE,
-                                  ![self].nextGiftId = notify.gidNext]
-                          /\ channels' = notify.channels
-                          /\ IF needsHandoff
-                             THEN nextRefId' = notify.pwNext
-                             ELSE UNCHANGED nextRefId
-                   [] fireOpFlush
-                       -> /\ vats' =
-                              [vats EXCEPT
-                                  ![self].refs[chainR].repropNotified = TRUE,
-                                  ![self].refs[chainR].flushPending =
-                                      listeners]
-                          /\ channels' =
-                              AppendToManyOutboxes(channels, self, listeners,
-                                  OpFlush(chainR))
-                   [] OTHER -> FALSE)
+              /\ ListenersNotifyable(self, res, listeners)
+              /\ vats' =
+                   [vats EXCEPT
+                       ![self].refs[chainR].repropNotified = TRUE,
+                       ![self].refs[chainR].notified = TRUE,
+                       ![self].nextGiftId = notify.gidNext]
+              /\ channels' = notify.channels
+              /\ IF needsHandoff
+                 THEN nextRefId' = notify.pwNext
+                 ELSE UNCHANGED nextRefId
               /\ UNCHANGED << host, sent, delivered >>
               /\ IF ~fireOpResolveNow \/ ~needsHandoff THEN HandoffVarsUnchanged
                  ELSE TRUE
@@ -1717,10 +1548,6 @@ ReceiveNetwork ==
                         \* chain ref until the withdraw-promise resolves so
                         \* post-shorten sends stay in pending (local
                         \* single-node condition; no flush relay).
-                        chainOpFlushEmbargo ==
-                            /\ isChain
-                            /\ RoutingPolicy = "OpFlushProtocol"
-                            /\ ~chainFresh
                         chainProbe ==
                             OpEFlushProbe(self, targetRefId,
                                           chainEntry.resolverRefId)
@@ -1742,18 +1569,12 @@ ReceiveNetwork ==
                                                 ResRef(self, pw),
                                             \* EJavaFlush slow path adds the
                                             \* sender (`from`) to the embargo
-                                            \* set; OpFlushProtocol clears all
-                                            \* prior sources on this chain ref
-                                            \* (the handoff swings to the
-                                            \* withdraw-promise); other
-                                            \* policies leave it untouched.
+                                            \* set; other policies leave the
+                                            \* embargo untouched.
                                             ![self].refs[targetRefId].embargo =
-                                                IF chainEmbargo \/ chainOpFlushEmbargo
+                                                IF chainEmbargo
                                                 THEN chainEntry.embargo \cup {from}
-                                                ELSE IF RoutingPolicy =
-                                                          "OpFlushProtocol"
-                                                     THEN {}
-                                                     ELSE chainEntry.embargo]
+                                                ELSE chainEntry.embargo]
                                    /\ channels' =
                                         LET ch1 == AppendToOutbox(ch0, self,
                                                        tgtHost,
@@ -1799,75 +1620,82 @@ ReceiveNetwork ==
                                 chain |-> isChain,
                                 accepted |-> accept,
                                 embargoed |-> chainEmbargo])
-              \/ \* op:flush  (OpFlushProtocol only).  Listener `self`
-                 \* sets embargo on its RemotePromise AND immediately
-                 \* enqueues op:flush-ack on its own outbox back to the
-                 \* resolver `from`.  Because channels[self][from] is
-                 \* p2p FIFO, any previously-pipelined op:deliver-only
-                 \* sends from `self` to `from` are already in the
-                 \* channel and queue behind the ack -- the resolver
-                 \* therefore receives (and forwards) all of `self`'s
-                 \* pre-flush sends before it dequeues the ack.  No
-                 \* "is my outbox empty?" inference is needed.
+              \/ \* op:flush  (Ridley, OpFlushProtocol only).  Receiver
+                 \* `self` is the resolver-holder of the LocalPromise at
+                 \* msg.toDescRefId; sender `from` is the would-be
+                 \* shortener.  Per notes/flush-protocols.md §9 step 2,
+                 \* `self` MUST: (a) mint a fresh local promise `p'`
+                 \* at a NEW refId slot (allocated from nextRefId); (b)
+                 \* fulfill the old resolver `r` with `p'` -- modelled
+                 \* by setting refs[r].resolution = ResRef(self, p'),
+                 \* which causes future sends through r to cascade onto
+                 \* p' via the standard intra-vat queue machinery; (c)
+                 \* emit the flush response op:resolve(resolveMeRefId,
+                 \* desc:import-promise(p')) back on channels[self][from].
+                 \* Implicit GC of the old r is NOT modelled (the slot
+                 \* stays live but is now resolved-to-p').
+                 \*
+                 \* Refused (silent drop) if the old resolver `r` does
+                 \* not exist at self as an unresolved LocalPromise --
+                 \* second concurrent flush against the same r cannot
+                 \* fulfill r twice; Ridley §9 v0 limitation.
                  /\ msg.op = "op:flush"
                  /\ RoutingPolicy = "OpFlushProtocol"
-                 /\ LET r == msg.refId
+                 /\ LET r == msg.toDescRefId
+                        rm == msg.resolveMeRefId
                         entry == LocalRef(self, r)
+                        freshP == nextRefId
+                        validFlush ==
+                            /\ entry # EntryNone
+                            /\ entry.kind = "LocalPromise"
+                            /\ entry.resolution = ResNone
+                            /\ freshP \in RefIds
                     IN
-                       /\ entry # EntryNone
-                       /\ entry.kind = "RemotePromise"
-                       \* OpFlush op:flush receive: add the source
-                       \* (= `from`, the resolver who sent the op:flush)
-                       \* to the refid-scoped embargo set.  The matching
-                       \* op:resolve install will remove the same source.
-                       /\ vats' =
-                            [vats EXCEPT
-                                ![self].refs[r].embargo =
-                                    entry.embargo \cup {from}]
-                       /\ channels' =
-                            AppendToOutbox(ch0, self, from, OpFlushAck(r))
+                       /\ (CASE validFlush
+                                -> /\ vats' =
+                                        [vats EXCEPT
+                                            \* Fulfill r with p'.
+                                            ![self].refs[r].resolution =
+                                                ResRef(self, freshP),
+                                            ![self].refs[r].notified = TRUE,
+                                            \* Mint p' as a fresh LocalPromise
+                                            \* at this peer, ready to absorb the
+                                            \* future eventual resolution and
+                                            \* hold the buffered sends.
+                                            ![self].refs[freshP] =
+                                                MkLocalPromise(<< >>, {}, ResNone,
+                                                    {}, FALSE, FALSE, {})]
+                                   /\ nextRefId' = freshP + 1
+                                   /\ channels' =
+                                        AppendToOutbox(ch0, self, from,
+                                            OpResolve(rm,
+                                                DescImportPromise(freshP)))
+                            [] OTHER
+                                -> \* Silent drop: cannot serve a second
+                                   \* concurrent flush against the same r.
+                                   /\ channels' = ch0
+                                   /\ UNCHANGED << vats, nextRefId >>)
                        /\ UNCHANGED << host, sent, delivered >>
                        /\ HandoffVarsUnchanged
                        /\ Mark([name |-> "ReceiveNetwork",
                                 kind |-> "flush",
                                 from |-> from,
                                 to |-> self,
-                                refId |-> r])
-              \/ \* op:flush-ack  (OpFlushProtocol only)
-                 /\ msg.op = "op:flush-ack"
-                 /\ RoutingPolicy = "OpFlushProtocol"
-                 /\ LET r == msg.refId
-                        entry == LocalRef(self, r)
-                    IN
-                       /\ entry # EntryNone
-                       /\ entry.kind = "LocalPromise"
-                       /\ from \in entry.flushPending
-                       /\ vats' =
-                            [vats EXCEPT
-                                ![self].refs[r].flushPending = entry.flushPending \ {from}]
-                       /\ channels' = ch0
-                       /\ UNCHANGED << host, sent, delivered >>
-                       /\ HandoffVarsUnchanged
-                       /\ Mark([name |-> "ReceiveNetwork",
-                                kind |-> "flush-ack",
-                                from |-> from,
-                                to |-> self,
-                                refId |-> r])
-              \/ \* op:e-flush-probe.  End-to-end sentinel used by both
-                 \* EJavaFlush (subscriber-initiated slow path) and
-                 \* OpFlushProtocol (resolver-initiated target flush).
-                 \* It rides the pipelined path exactly like an
-                 \* op:deliver-only would: dispatch by Route over
-                 \* LocalRef(self, r), then ApplyRoute.  Terminal
-                 \* "deliver" tag at a LocalTarget is intercepted by
-                 \* ApplyRoute (polymorphic on msg.op) to emit
-                 \* OpEFlushProbeAck back to msg.originPeer on `self`'s
-                 \* own outbox, rather than appending to `delivered`.
-                 \* Probes that hit an unresolved LocalPromise or an
-                 \* embargoed RemotePromise correctly queue/hold and
-                 \* are later drained by ProcessPending / ProcessHold.
+                                refId |-> msg.toDescRefId])
+              \/ \* op:e-flush-probe.  EJavaFlush-only sentinel
+                 \* (subscriber-initiated slow path).  Rides the
+                 \* pipelined path exactly like an op:deliver-only:
+                 \* dispatch by Route over LocalRef(self, r), then
+                 \* ApplyRoute.  Terminal "deliver" tag at a LocalTarget
+                 \* is intercepted by ApplyRoute (polymorphic on msg.op)
+                 \* to emit OpEFlushProbeAck back to msg.originPeer on
+                 \* `self`'s own outbox, rather than appending to
+                 \* `delivered`.  Probes that hit an unresolved
+                 \* LocalPromise or an embargoed RemotePromise correctly
+                 \* queue/hold and are later drained by ProcessPending
+                 \* / ProcessHold.
                  /\ msg.op = "op:e-flush-probe"
-                 /\ RoutingPolicy \in {"EJavaFlush", "OpFlushProtocol"}
+                 /\ RoutingPolicy = "EJavaFlush"
                  /\ LET r == msg.refId
                         entry == LocalRef(self, r)
                         route == Route(self, r)
@@ -1889,56 +1717,34 @@ ReceiveNetwork ==
                                 tag |-> route.tag,
                                 originPeer |-> msg.originPeer,
                                 originRefId |-> msg.originRefId])
-              \/ \* op:e-flush-probe-ack.  Returned by the eventual
-                 \* target back to the probe's originPeer (= self) on
-                 \* the direct channel from terminal -> self.  Dispatch
-                 \* on the originator's entry kind at originRefId:
-                 \*   - EJavaFlush: originator is a subscriber holding
-                 \*     a RemotePromise; ack lifts that promise's
-                 \*     embargo so ProcessHold can drain the
-                 \*     locally-buffered pending sends to the newly
-                 \*     committed post-resolution path.
-                 \*   - OpFlushProtocol: originator is a resolver
-                 \*     holding a LocalPromise; ack advances that
-                 \*     promise's flushPhase from "out" to "acked", so
-                 \*     SendOpResolveAfterFlush becomes enabled.
+              \/ \* op:e-flush-probe-ack.  EJavaFlush only -- the
+                 \* originator is a subscriber holding a RemotePromise;
+                 \* ack lifts that promise's refid-scoped embargo so
+                 \* ProcessHold can drain the locally-buffered pending
+                 \* sends to the newly committed post-resolution path.
+                 \* OpFlushProtocol does NOT emit probes; its drain
+                 \* proof is per-session FIFO (see Ridley §9 / §9.1
+                 \* implementation pointer).
                  /\ msg.op = "op:e-flush-probe-ack"
-                 /\ RoutingPolicy \in {"EJavaFlush", "OpFlushProtocol"}
+                 /\ RoutingPolicy = "EJavaFlush"
                  /\ LET r == msg.originRefId
                         entry == LocalRef(self, r)
                         \* Apply the ack effect only when the local
                         \* state still matches what the ack was issued
                         \* against; otherwise drop the ack (consume from
                         \* the channel) so it doesn't block subsequent
-                        \* messages on this FIFO.  Stale acks can arise
-                        \* if another path cleared embargo / advanced
-                        \* flushPhase concurrently.
+                        \* messages on this FIFO.
                         liftEmbargo ==
                             /\ entry # EntryNone
                             /\ entry.kind = "RemotePromise"
-                            /\ RoutingPolicy = "EJavaFlush"
                             /\ entry.embargo # {}
-                        advanceFlush ==
-                            /\ entry # EntryNone
-                            /\ entry.kind = "LocalPromise"
-                            /\ RoutingPolicy = "OpFlushProtocol"
-                            /\ entry.flushPhase = "out"
                     IN
                        /\ (CASE liftEmbargo
                                 -> vats' =
                                        [vats EXCEPT
-                                           \* Remove the matching source
-                                           \* (= entry.resolverPeer, the
-                                           \* resolverPeer who originally
-                                           \* triggered the slow path) from
-                                           \* the refid-scoped embargo set.
                                            ![self].refs[r].embargo =
                                                entry.embargo
                                                    \ {entry.resolverPeer}]
-                            [] advanceFlush
-                                -> vats' =
-                                       [vats EXCEPT
-                                           ![self].refs[r].flushPhase = "acked"]
                             [] OTHER -> UNCHANGED vats)
                        /\ channels' = ch0
                        /\ UNCHANGED << host, sent, delivered >>
@@ -2279,6 +2085,64 @@ HandoffInitiate ==
                            pw |-> pw])
 
 ----------------------------------------------------------------------------
+(* InitiateFlush: shortener-initiated op:flush per Ridley (ocapn#11,        *)
+(* notes/flush-protocols.md §9).  Fires when peer `self` has learned that  *)
+(* its local promise (a RemotePromise it holds) has resolved to something  *)
+(* on a third-party peer -- "neither self nor the resolver-holder."  Send  *)
+(* op:flush to the resolver-holder asking for a fresh r' to retarget the   *)
+(* eventual handoff at.                                                    *)
+(*                                                                         *)
+(* Locality: all reads via LocalRef(self, _); writes scoped to             *)
+(* vats[self].refs[_] and channels[self][_].                               *)
+(*                                                                         *)
+(* Note on concurrent flushes: each flush mints fresh nextRefId slots, so  *)
+(* concurrent flushes from multiple peers against the same r cooperate at  *)
+(* the receiver -- but the receiver's r can only be fulfilled once (a v0  *)
+(* limitation of our intra-vat cascade).  The receive branch silently     *)
+(* drops a second flush if r is already resolved.                          *)
+InitiateFlush ==
+    /\ EnableShorten
+    /\ RoutingPolicy = "OpFlushProtocol"
+    /\ \E self \in Peers : \E r \in DOMrefs(self) :
+        /\ LocalRef(self, r).kind = "RemotePromise"
+        /\ LocalRef(self, r).localResolution # ResNone
+        /\ LocalRef(self, r).localResolution.peer # self
+        /\ LocalRef(self, r).localResolution.peer #
+              LocalRef(self, r).resolverPeer
+        /\ ~LocalRef(self, r).flushSent
+        /\ LET entry == LocalRef(self, r)
+               answerPos == nextRefId
+               resolveMe == nextRefId + 1
+           IN
+              /\ answerPos \in RefIds
+              /\ resolveMe \in RefIds
+              \* Pre-mint a RemotePromise placeholder at resolveMe so the
+              \* flush response (an op:resolve(resolveMe, ...) from the
+              \* resolver-holder) lands cleanly.  resolverPeer is the
+              \* receiver (entry.resolverPeer); resolverRefId is set
+              \* equal to resolveMe under the v0 shared-refId convention.
+              \* flushSent stays FALSE on the new entry so secondary
+              \* InitiateFlush cycles can run if desired.
+              /\ vats' =
+                   [vats EXCEPT
+                       ![self].refs[r].flushSent = TRUE,
+                       ![self].refs[resolveMe] =
+                           MkRemotePromise(entry.resolverPeer, resolveMe,
+                               ResNone, {}, << >>, FALSE, TRUE, FALSE)]
+              /\ nextRefId' = resolveMe + 1
+              /\ channels' =
+                   AppendToOutbox(channels, self, entry.resolverPeer,
+                       OpFlush(entry.resolverRefId, answerPos, resolveMe))
+              /\ UNCHANGED << host, sent, delivered >>
+              /\ HandoffVarsUnchanged
+              /\ Mark([name |-> "InitiateFlush",
+                       actor |-> self,
+                       refId |-> r,
+                       resolver |-> entry.resolverPeer,
+                       answerPos |-> answerPos,
+                       resolveMe |-> resolveMe])
+
+----------------------------------------------------------------------------
 Init == PromiseResolutionInit
 
 Next ==
@@ -2287,8 +2151,7 @@ Next ==
     \/ ReceiveNetwork
     \/ ProcessPending
     \/ ProcessHold
-    \/ SendTargetFlushProbe
-    \/ SendOpResolveAfterFlush
+    \/ InitiateFlush
     \/ RepropagatePromiseShorten
     \/ Listen
     \/ HandoffInitiate
@@ -2302,8 +2165,7 @@ Fairness ==
     /\ WF_vars(ResolverResolve)
     /\ WF_vars(ReceiveNetwork)
     /\ WF_vars(ProcessPending)
-    /\ WF_vars(SendTargetFlushProbe)
-    /\ WF_vars(SendOpResolveAfterFlush)
+    /\ WF_vars(InitiateFlush)
     /\ WF_vars(RepropagatePromiseShorten)
     /\ WF_vars(ProcessHold)
     /\ WF_vars(Listen)
