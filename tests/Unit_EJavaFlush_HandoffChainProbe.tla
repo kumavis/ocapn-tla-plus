@@ -71,10 +71,10 @@ Init ==
                   CASE p = "vatA" /\ r = 1 ->
                           PS!MkRemotePromise("vatB", 1,
                               PS!ResRef("vatC", 2),
-                              FALSE, << >>, TRUE, FALSE)
+                              {}, << >>, TRUE, FALSE)
                     [] p = "vatA" /\ r = 2 ->
                             PS!MkRemotePromise("vatC", 2, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                                {}, << >>, TRUE, TRUE)
                     [] p = "vatA" /\ r = 3 ->
                             PS!MkLocalTarget
                     [] p = "vatB" /\ r = 1 ->
@@ -88,10 +88,10 @@ Init ==
                             \* receive and so chainEmbargo = TRUE under
                             \* EJavaFlush.
                             PS!MkRemotePromise("vatC", 2, PS!ResNone,
-                                FALSE, << >>, TRUE, FALSE)
+                                {}, << >>, TRUE, FALSE)
                     [] p = "vatC" /\ r = 1 ->
                             PS!MkRemotePromise("vatB", 1, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                                {}, << >>, TRUE, TRUE)
                     [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalPromise(<< >>, {"vatB"},
                                 PS!ResRef("vatA", 3), {}, TRUE, "idle", FALSE, {})
@@ -145,7 +145,7 @@ OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 (* Witness predicates -- factored out for clarity in the invariant. *)
 RecipientEmbargoed ==
     /\ vats["vatB"].refs[2].kind = "RemotePromise"
-    /\ vats["vatB"].refs[2].embargo = TRUE
+    /\ vats["vatB"].refs[2].embargo # {}
 
 (* The probe must originate at the recipient (vatB), be tagged with the
    recipient's targetRefId (=2), and carry chainEntry.resolverRefId (=2,

@@ -50,10 +50,10 @@ Init ==
                   CASE p = "vatA" /\ r = 2 -> PS!MkRemoteTarget("vatC", 2)
                     [] p = "vatB" /\ r = 1 ->
                             PS!MkRemotePromise("vatA", 1, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                                {}, << >>, TRUE, TRUE)
                     [] p = "vatB" /\ r = 3 ->
                             PS!MkRemotePromise("vatC", 3, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                                {}, << >>, TRUE, TRUE)
                     [] p = "vatC" /\ r = 2 -> PS!MkLocalTarget
                     [] p = "vatC" /\ r = 3 ->
                             PS!MkLocalPromise(<< >>, {"vatB"},

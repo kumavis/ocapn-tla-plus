@@ -65,7 +65,7 @@ Init ==
                             PS!MkRemoteTarget("vatC", 2)
                     [] p = "vatB" /\ r = 1 ->
                             PS!MkRemotePromise("vatA", 1, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                                {}, << >>, TRUE, TRUE)
                     [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalTarget
                     [] OTHER -> PS!EntryNone],

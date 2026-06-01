@@ -143,7 +143,14 @@ RefEntryType(Messages) ==
           resolverPeer: Peers,
           resolverRefId: RefIds,
           localResolution: ResolutionType,
-          embargo: BOOLEAN,
+          \* embargo: refId-scoped — set of source peers with an
+          \* outstanding flush against this listener-ref.  Empty set =
+          \* not embargoed.  Add the source on flush-event (EJavaFlush
+          \* slow path / OpFlushProtocol op:flush receive / chain
+          \* handoff-give slow path), remove on resolution-event
+          \* (matching probe-ack / op:resolve install).  Boolean
+          \* check `# {}` everywhere the old code tested `entry.embargo`.
+          embargo: SUBSET Peers,
           pending: Seq(Messages),
           listenSent: BOOLEAN,
           fresh: BOOLEAN]
@@ -164,7 +171,7 @@ MkChainRefs(h, listenersFn) ==
             ELSE IF h[r] = p
             THEN MkLocalPromise(<< >>, listenersFn[r], ResNone, {},
                                 FALSE, "idle", FALSE, {})
-            ELSE MkRemotePromise(h[r], r, ResNone, FALSE, << >>, FALSE, TRUE)
+            ELSE MkRemotePromise(h[r], r, ResNone, {}, << >>, FALSE, TRUE)
         ]
     ]
 

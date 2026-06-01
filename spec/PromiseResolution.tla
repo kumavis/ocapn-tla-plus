@@ -447,7 +447,7 @@ Route(self, r) ==
             \* Either way, once a pending entry exists or embargo is set,
             \* subsequent sends queue behind whatever's already there.
             IF /\ RoutingPolicy \in {"EJavaFlush", "OpFlushProtocol"}
-               /\ \/ entry.embargo
+               /\ \/ entry.embargo # {}
                   \/ Len(entry.pending) > 0
             THEN [tag |-> "hold", peer |-> self, refId |-> r]
             ELSE IF entry.localResolution = ResNone
@@ -750,7 +750,7 @@ ProcessPending ==
 ProcessHold ==
     \E self \in Peers : \E r \in DOMrefs(self) :
         /\ LocalRef(self, r).kind = "RemotePromise"
-        /\ ~LocalRef(self, r).embargo
+        /\ LocalRef(self, r).embargo = {}
         /\ Len(LocalRef(self, r).pending) > 0
         /\ LET entry == LocalRef(self, r)
                msg == Head(entry.pending)
@@ -1548,7 +1548,7 @@ ReceiveNetwork ==
                                  /\ LocalRef(self, cr).kind = "RemotePromise"
                                  /\ LocalRef(self, cr).localResolution =
                                         ResRef(self, r)
-                                 /\ LocalRef(self, cr).embargo
+                                 /\ LocalRef(self, cr).embargo # {}
                     IN
                        /\ ~handoffPwBlocked
                        /\ entry # EntryNone
@@ -1573,21 +1573,41 @@ ReceiveNetwork ==
                                            [vats EXCEPT
                                                ![self].refs[r].localResolution =
                                                    newLocalRes,
-                                               ![self].refs[r].embargo = FALSE]
+                                               \* OpFlush op:resolve install:
+                                               \* remove the matching source
+                                               \* (= `from`, the resolver who
+                                               \* sent the op:flush) from the
+                                               \* refid-scoped embargo set.
+                                               \* For EJavaFlush this branch
+                                               \* fires on the fast path or
+                                               \* withdraw-promise paths;
+                                               \* embargo is already {} so the
+                                               \* set-difference is a no-op.
+                                               ![self].refs[r].embargo =
+                                                   entry.embargo \ {from}]
                                    IN /\ vats' =
                                           IF /\ RoutingPolicy =
                                                     "OpFlushProtocol"
                                              /\ chainBinderExists
                                           THEN [vatsBase EXCEPT
                                                     ![self].refs[chainBinder]
-                                                        .embargo = FALSE]
+                                                        .embargo =
+                                                        LocalRef(self, chainBinder).embargo
+                                                          \ {LocalRef(self, chainBinder).resolverPeer}]
                                           ELSE vatsBase
                                       /\ channels' = ch0
                             [] embargoInstead
                                 -> /\ vats' =
                                        [vats EXCEPT
                                            ![self].refs[r].localResolution = newLocalRes,
-                                           ![self].refs[r].embargo = TRUE]
+                                           \* EJavaFlush slow path: add the
+                                           \* source (= `from`, the
+                                           \* resolverPeer who sent this
+                                           \* op:resolve) to the refid-scoped
+                                           \* embargo set.  Probe-ack will
+                                           \* remove it on receipt.
+                                           ![self].refs[r].embargo =
+                                               entry.embargo \cup {from}]
                                    /\ channels' =
                                         AppendToOutbox(ch0, self,
                                             entry.resolverPeer, probeMsg)
@@ -1710,22 +1730,23 @@ ReceiveNetwork ==
                                         [vats EXCEPT
                                             ![self].refs[pw] =
                                                 MkRemotePromise(tgtHost, pw,
-                                                    ResNone, FALSE,
+                                                    ResNone, {},
                                                     << >>, TRUE, TRUE),
                                             ![self].refs[targetRefId].localResolution =
                                                 ResRef(self, pw),
-                                            \* EJavaFlush slow path sets
-                                            \* embargo; OpFlushProtocol clears
-                                            \* the embargo previously set by
-                                            \* op:flush; other policies leave
-                                            \* it at its existing (FALSE)
-                                            \* value.
+                                            \* EJavaFlush slow path adds the
+                                            \* sender (`from`) to the embargo
+                                            \* set; OpFlushProtocol clears all
+                                            \* prior sources on this chain ref
+                                            \* (the handoff swings to the
+                                            \* withdraw-promise); other
+                                            \* policies leave it untouched.
                                             ![self].refs[targetRefId].embargo =
                                                 IF chainEmbargo \/ chainOpFlushEmbargo
-                                                THEN TRUE
+                                                THEN chainEntry.embargo \cup {from}
                                                 ELSE IF RoutingPolicy =
                                                           "OpFlushProtocol"
-                                                     THEN FALSE
+                                                     THEN {}
                                                      ELSE chainEntry.embargo]
                                    /\ channels' =
                                         LET ch1 == AppendToOutbox(ch0, self,
@@ -1742,7 +1763,7 @@ ReceiveNetwork ==
                                         [vats EXCEPT
                                             ![self].refs[pw] =
                                                 MkRemotePromise(tgtHost, pw,
-                                                    ResNone, FALSE,
+                                                    ResNone, {},
                                                     << >>, TRUE, TRUE)]
                                    /\ channels' =
                                         AppendToOutbox(ch0, self, tgtHost,
@@ -1783,8 +1804,14 @@ ReceiveNetwork ==
                     IN
                        /\ entry # EntryNone
                        /\ entry.kind = "RemotePromise"
+                       \* OpFlush op:flush receive: add the source
+                       \* (= `from`, the resolver who sent the op:flush)
+                       \* to the refid-scoped embargo set.  The matching
+                       \* op:resolve install will remove the same source.
                        /\ vats' =
-                            [vats EXCEPT ![self].refs[r].embargo = TRUE]
+                            [vats EXCEPT
+                                ![self].refs[r].embargo =
+                                    entry.embargo \cup {from}]
                        /\ channels' =
                             AppendToOutbox(ch0, self, from, OpFlushAck(r))
                        /\ UNCHANGED << host, sent, delivered >>
@@ -1878,7 +1905,7 @@ ReceiveNetwork ==
                             /\ entry # EntryNone
                             /\ entry.kind = "RemotePromise"
                             /\ RoutingPolicy = "EJavaFlush"
-                            /\ entry.embargo
+                            /\ entry.embargo # {}
                         advanceFlush ==
                             /\ entry # EntryNone
                             /\ entry.kind = "LocalPromise"
@@ -1888,7 +1915,14 @@ ReceiveNetwork ==
                        /\ (CASE liftEmbargo
                                 -> vats' =
                                        [vats EXCEPT
-                                           ![self].refs[r].embargo = FALSE]
+                                           \* Remove the matching source
+                                           \* (= entry.resolverPeer, the
+                                           \* resolverPeer who originally
+                                           \* triggered the slow path) from
+                                           \* the refid-scoped embargo set.
+                                           ![self].refs[r].embargo =
+                                               entry.embargo
+                                                   \ {entry.resolverPeer}]
                             [] advanceFlush
                                 -> vats' =
                                        [vats EXCEPT

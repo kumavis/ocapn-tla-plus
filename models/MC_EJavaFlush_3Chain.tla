@@ -88,6 +88,6 @@ NoSlowPathCompletion_MC ==
             /\ vats[p].refs[r].kind = "RemotePromise"
             /\ vats[p].refs[r].localResolution # PS!ResNone
             /\ vats[p].refs[r].fresh = FALSE
-            /\ vats[p].refs[r].embargo = FALSE )
+            /\ vats[p].refs[r].embargo = {} )
 
 ============================================================================

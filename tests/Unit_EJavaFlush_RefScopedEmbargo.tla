@@ -104,7 +104,7 @@ Init ==
                           \* through ref 2.  listenSent = TRUE keeps Listen
                           \* disabled.
                           PS!MkRemotePromise("vatB", 1, PS!ResNone,
-                              FALSE, << >>, TRUE, TRUE)
+                              {}, << >>, TRUE, TRUE)
                     [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                     [] p = "vatB" /\ r = 1 ->
@@ -177,7 +177,7 @@ OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 (* The discriminating safety invariant: with the ref-parameterized
    chainEmbargo gate (chainFresh consults the per-ref fresh bit, not any
-   "did this peer ever send anything?" heuristic), the embargo bit on
-   vats[vatA].refs[1] is never set. *)
-NoSpuriousEmbargo_MC == vats["vatA"].refs[1].embargo = FALSE
+   "did this peer ever send anything?" heuristic), the embargo set on
+   vats[vatA].refs[1] is never populated. *)
+NoSpuriousEmbargo_MC == vats["vatA"].refs[1].embargo = {}
 ============================================================================
