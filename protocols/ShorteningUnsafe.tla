@@ -1,16 +1,15 @@
 ------------------------- MODULE ShorteningUnsafe -------------------------
 (***************************************************************************)
-(* Policy module for `ShorteningUnsafe`.                                   *)
+(* Policy module for `ShorteningUnsafe`.                                  *)
 (*                                                                         *)
-(* MCs instantiate this module (instead of spec/PromiseResolution.tla)    *)
-(* to pin RoutingPolicy.  The choice of policy is encoded in which        *)
-(* protocols/<Policy>.tla the MC INSTANCEs; the RoutingPolicy constant    *)
-(* no longer needs to live in the MC's CONSTANT block.                    *)
+(* MCs instantiate this module (instead of spec/Core.tla) to pin the      *)
+(* routing policy.  The choice of policy is encoded in which              *)
+(* protocols/<Policy>.tla the MC INSTANCEs.                               *)
 (*                                                                         *)
-(* The big actions and dispatch live in spec/PromiseResolution.tla,       *)
-(* which this module wraps via INSTANCE with the RoutingPolicy operator   *)
-(* substituted for Core's RoutingPolicy CONSTANT.  See                    *)
-(* notes/refactor-plan-inversion.md for the rationale.                    *)
+(* The big actions and dispatch live in spec/Core.tla, which this module  *)
+(* wraps via INSTANCE with policy-hook operators substituted for Core's   *)
+(* CONSTANT hooks.  See notes/refactor-plan-inversion.md for the          *)
+(* rationale.                                                              *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, TLC, References, Network, PeerState
@@ -24,8 +23,6 @@ CONSTANT
     EnableHandoffInitiate,
     EnableRepropagate,
     EnableShorten
-
-RoutingPolicy == "ShorteningUnsafe"
 
 VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 
@@ -50,12 +47,12 @@ PolicyRequiresWitnessForShorten3Party == FALSE
 PolicyShortens3PartyAnywhere == TRUE
 PolicyChainEmbargoOnHandoffGive == FALSE
 
-PR == INSTANCE PromiseResolution
+PR == INSTANCE Core
 
 ----------------------------------------------------------------------------
-(* Re-exports for operators defined in PromiseResolution.tla (NOT
-   inherited via the lib/ EXTENDS chain).  Operators that come through
-   EXTENDS are visible directly through `PS!OpName` without re-export. *)
+(* Re-exports for operators defined in Core.tla (NOT inherited via the
+   lib/ EXTENDS chain).  Operators that come through EXTENDS are visible
+   directly through `PS!OpName` without re-export. *)
 
 Init == PR!Init
 Next == PR!Next

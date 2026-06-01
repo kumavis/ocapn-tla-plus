@@ -8,7 +8,7 @@
 (* and the full policy semantics live in protocols/OpFlushProtocol.tla     *)
 (* (the policy module).  Core EXTENDS this module so the wire-op           *)
 (* constructor is visible from the receive-branch dispatch in              *)
-(* spec/PromiseResolution.tla's ReceiveNetwork.                            *)
+(* spec/Core.tla's ReceiveNetwork.                                          *)
 (*                                                                         *)
 (* Surprising FIFO finding: Ridley's protocol as specified does NOT       *)
 (* preserve EndToEndRefFIFO on the chain topologies this spec exercises. *)

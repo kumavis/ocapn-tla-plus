@@ -15,8 +15,8 @@
 (*                                                                         *)
 (* The receive branches for op:e-flush-probe / op:e-flush-probe-ack and    *)
 (* the embargoInstead branch of the op:resolve receive stay inline in     *)
-(* spec/PromiseResolution.tla because they are part of the big            *)
-(* ReceiveNetwork action body that dispatches across all policies.        *)
+(* spec/Core.tla because they are part of the big ReceiveNetwork action   *)
+(* body that dispatches across all policies.                              *)
 (*                                                                         *)
 (* Other policies do not read or write the EJavaFlush-specific state      *)
 (* fields (`embargo`, `fresh`, `pending`, `pipelinedListeners`); under     *)
@@ -106,9 +106,7 @@ ListenersWitnessPipelined(resolver, promiseRefId, listeners) ==
     # {}
 
 (* Note: ProcessHold (the action that drains RemotePromise.pending after
-   embargo lifts) stays in spec/PromiseResolution.tla because it
-   references Route and ApplyRoute, which need to be visible to other
-   actions (PeerSend, ResolverResolve, ProcessPending, ReceiveNetwork)
-   that also live there. *)
+   embargo lifts) lives in protocols/EJavaFlush.tla and uses Route /
+   ApplyRoute via the PR INSTANCE of spec/Core.tla. *)
 
 ============================================================================

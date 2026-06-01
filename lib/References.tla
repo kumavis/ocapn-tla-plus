@@ -87,7 +87,7 @@ MkLocalPromise(queue, listeners, resolution, flushPending,
    commit to the post-resolution path immediately, with no end-to-end
    flush sentinel, because no in-flight or downstream-buffered message
    could race the new path.  See the long "EJavaFlush protocol" block
-   in spec/PromiseResolution.tla for the protocol-level rationale and
+   in spec/Core.tla for the protocol-level rationale and
    source citations.
    `flushSent` is OpFlushProtocol's shortener-side bookkeeping: TRUE
    after this peer has fired InitiateFlush against this entry, FALSE

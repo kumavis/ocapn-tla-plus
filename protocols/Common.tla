@@ -3,24 +3,24 @@
 (* Common ground for protocol modules.                                      *)
 (*                                                                         *)
 (* Pulled in transitively by every per-protocol module under protocols/    *)
-(* and by spec/PromiseResolution.tla.  Holds:                              *)
-(*   - the shared CONSTANT block (RoutingPolicy, DebugTrace, the           *)
-(*     Enable*** feature flags, NumMessages),                              *)
+(* and by spec/Core.tla.  Holds:                                            *)
+(*   - the shared CONSTANT block (DebugTrace, the Enable*** feature flags, *)
+(*     NumMessages),                                                       *)
 (*   - the lastAction VARIABLE used by debug tracing,                      *)
 (*   - the Mark / HandoffVarsUnchanged helpers consumed by every protocol  *)
 (*     action.                                                             *)
 (*                                                                         *)
 (* Per-protocol code lives in protocols/<Policy>.tla.  The big actions     *)
-(* that orchestrate dispatch by RoutingPolicy (PeerSend, ResolverResolve,  *)
-(* ReceiveNetwork, ProcessPending, ...) stay in spec/PromiseResolution.tla *)
-(* because their bodies cross policy boundaries.                           *)
+(* dispatch via policy-identity Boolean hooks declared as CONSTANTs in     *)
+(* spec/Core.tla and substituted per policy.  There is no RoutingPolicy   *)
+(* CONSTANT -- the choice of policy is the choice of which                 *)
+(* protocols/<Policy>.tla module the MC INSTANCEs.                         *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, TLC, References, Network, PeerState
 
 CONSTANT
     NumMessages,
-    RoutingPolicy,
     DebugTrace,
     EmptyInitialListeners,
     EnableDynamicListen,
@@ -30,13 +30,6 @@ CONSTANT
     EnableShorten
 
 ASSUME NumMessages \in Nat \ {0}
-ASSUME RoutingPolicy \in {
-    "NaivePromiseResolution",
-    "NoPromiseResolution",
-    "ShorteningUnsafe",
-    "EJavaFlush",
-    "OpFlushProtocol"
-}
 ASSUME DebugTrace \in BOOLEAN
 ASSUME EmptyInitialListeners \in BOOLEAN
 ASSUME EnableDynamicListen \in BOOLEAN

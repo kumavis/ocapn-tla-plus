@@ -88,8 +88,9 @@ threads; it is not specifically about promise-to-promise shortening.
 
 ## Routing policies
 
-Set via the `RoutingPolicy` constant in
-[`spec/PromiseResolution.tla`](spec/PromiseResolution.tla):
+Each policy lives in its own module under [`protocols/`](protocols/);
+MCs `INSTANCE` the policy module they want. The shared core actions
+and dispatch live in [`spec/Core.tla`](spec/Core.tla):
 
 - **`"NoPromiseResolution"`** — listeners are empty, no `op:resolve`
   ever fires; ref-1 sends always ride the wire through the chain.
@@ -196,7 +197,18 @@ ocapn-tla-plus/
 │   └── PeerState.tla     # vats[p].{refs,gifts,nextGiftId}, sent, delivered,
 │                         # nextRefId, and per-actor accessor operators
 ├── spec/
-│   └── PromiseResolution.tla
+│   └── Core.tla           # shared actions + dispatcher; per-policy hooks
+│                          # are CONSTANT operators substituted by the
+│                          # policy module that INSTANCEs this.
+├── protocols/             # per-policy modules (each INSTANCEs Core)
+│   ├── Common.tla         # shared CONSTANTs / VARIABLE / helpers
+│   ├── NoPromiseResolution.tla
+│   ├── NaivePromiseResolution.tla
+│   ├── ShorteningUnsafe.tla
+│   ├── EJavaFlush.tla     # owns ProcessHold + op:e-flush-probe receives
+│   ├── EJavaFlushHelpers.tla
+│   ├── OpFlushProtocol.tla  # owns InitiateFlush + op:flush receive
+│   └── OpFlushProtocolHelpers.tla
 ├── models/                # scenario MCs (policy-level race scenarios)
 │   ├── MC_NoPromiseResolution.tla / .cfg
 │   ├── MC_NoPromiseResolution_3Chain.tla / .cfg

@@ -27,7 +27,7 @@
 (* Post-fix behaviour: alreadyResolvedToTarget gate excludes the           *)
 (* needs-handoff case, so vatB falls through to the OTHER arm of the      *)
 (* op:listen receive -- the listener is recorded silently and no          *)
-(* op:resolve is sent (gap noted in spec/PromiseResolution.tla).           *)
+(* op:resolve is sent (gap noted in spec/Core.tla).           *)
 (* WireDescriptorContract holds; EndToEndRefFIFO holds (vatA's pipelined  *)
 (* sends still reach the terminal via the chain).                          *)
 (*                                                                         *)

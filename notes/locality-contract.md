@@ -1,7 +1,7 @@
 # Protocol locality contract
 
 This note pins down the locality contract that every protocol in
-`spec/PromiseResolution.tla` is required to satisfy, and audits every
+`spec/Core.tla` is required to satisfy, and audits every
 action against it. The contract exists because the spec is a model of
 a distributed system on top of OCapN sessions — anything implementable
 in real OCapN must be representable as actions that only touch their
@@ -319,16 +319,16 @@ Two further design choices are worth calling out:
 ```bash
 # Direct reads of another peer's state (should never appear in an action
 # body; only DOMrefs(self) and the accessors should appear):
-rg 'vats\[[^s]' spec/PromiseResolution.tla   # any vats[X] where X != self
+rg 'vats\[[^s]' spec/Core.tla   # any vats[X] where X != self
 
 # Writes that don't key on self (the bracket-key must be ![self]):
-rg 'vats EXCEPT !\[' spec/PromiseResolution.tla
+rg 'vats EXCEPT !\[' spec/Core.tla
 
 # Direct outbox/inbox accesses (should be via accessors):
-rg 'channels\[' spec/PromiseResolution.tla   # all should be inside accessors
+rg 'channels\[' spec/Core.tla   # all should be inside accessors
 
 # Bare Network* helpers in spec (should be Inbox*/AppendToOutbox):
-rg 'NetworkAppend|NetworkHead|NetworkTail|NetworkNonEmpty' spec/PromiseResolution.tla
+rg 'NetworkAppend|NetworkHead|NetworkTail|NetworkNonEmpty' spec/Core.tla
 ```
 
 After the Option C refactor:

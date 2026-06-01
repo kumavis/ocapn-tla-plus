@@ -1,4 +1,4 @@
-------------------------- MODULE PromiseResolution -------------------------
+----------------------------- MODULE Core -----------------------------
 (***************************************************************************)
 (* OCapN-flavored reference taxonomy with kind-discriminated dispatch.    *)
 (*                                                                         *)

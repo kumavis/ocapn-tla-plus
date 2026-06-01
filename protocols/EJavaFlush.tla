@@ -1,16 +1,15 @@
 ---------------------------- MODULE EJavaFlush ----------------------------
 (***************************************************************************)
-(* Policy module for `EJavaFlush`.                                   *)
+(* Policy module for `EJavaFlush`.                                        *)
 (*                                                                         *)
-(* MCs instantiate this module (instead of spec/PromiseResolution.tla)    *)
-(* to pin RoutingPolicy.  The choice of policy is encoded in which        *)
-(* protocols/<Policy>.tla the MC INSTANCEs; the RoutingPolicy constant    *)
-(* no longer needs to live in the MC's CONSTANT block.                    *)
+(* MCs instantiate this module (instead of spec/Core.tla) to pin the      *)
+(* routing policy.  The choice of policy is encoded in which              *)
+(* protocols/<Policy>.tla the MC INSTANCEs.                               *)
 (*                                                                         *)
-(* The big actions and dispatch live in spec/PromiseResolution.tla,       *)
-(* which this module wraps via INSTANCE with the RoutingPolicy operator   *)
-(* substituted for Core's RoutingPolicy CONSTANT.  See                    *)
-(* notes/refactor-plan-inversion.md for the rationale.                    *)
+(* The big actions and dispatch live in spec/Core.tla, which this module  *)
+(* wraps via INSTANCE with policy-hook operators substituted for Core's   *)
+(* CONSTANT hooks.  See notes/refactor-plan-inversion.md for the          *)
+(* rationale.                                                              *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, TLC, References, Network, PeerState
@@ -24,8 +23,6 @@ CONSTANT
     EnableHandoffInitiate,
     EnableRepropagate,
     EnableShorten
-
-RoutingPolicy == "EJavaFlush"
 
 VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 
@@ -58,7 +55,7 @@ PolicyRequiresWitnessForShorten3Party == TRUE
 PolicyShortens3PartyAnywhere == FALSE
 PolicyChainEmbargoOnHandoffGive == TRUE
 
-PR == INSTANCE PromiseResolution
+PR == INSTANCE Core
 
 ----------------------------------------------------------------------------
 (* EJavaFlush-specific action: ProcessHold.
@@ -184,7 +181,7 @@ ReceiveEFlushProbeAck ==
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 ----------------------------------------------------------------------------
-(* Re-exports for operators defined in PromiseResolution.tla.
+(* Re-exports for operators defined in Core.tla.
 
    Init unchanged; Next adds the EJavaFlush-only actions; Fairness adds
    the matching WF conjuncts; Spec rebuilds. *)

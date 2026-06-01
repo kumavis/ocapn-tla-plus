@@ -1,7 +1,7 @@
 # Wire-level reference for path-change protocols, intra-vat queue cascade, and 3PHO
 
 This note is the **wire-level protocol reference** for
-[`spec/PromiseResolution.tla`](../spec/PromiseResolution.tla). For the
+[`spec/Core.tla`](../spec/Core.tla). For the
 path-change taxonomy (promise resolution vs promise shortening) and the
 tracked future-work items that hang off it, see
 [`path-changes.md`](path-changes.md). For the precise per-variable
@@ -572,7 +572,7 @@ Full draft is mirrored at
 ### 9.1 Implementation in this spec
 
 The `OpFlushProtocol` routing policy in
-[`spec/PromiseResolution.tla`](../spec/PromiseResolution.tla)
+[`spec/Core.tla`](../spec/Core.tla)
 implements the protocol above faithfully — no compensating mechanisms.
 
 - **Trigger.** Action `InitiateFlush` fires when peer X holds a
@@ -676,7 +676,7 @@ processed at the eventual target before the ack returns.
 
 ### 10.2 What the `EJavaFlush` policy in this spec actually does
 
-`spec/PromiseResolution.tla`'s `"EJavaFlush"` is a faithful model of
+`spec/Core.tla`'s `"EJavaFlush"` is a faithful model of
 DelayedRedirector. It tracks the per-`RemotePromise` `fresh` sticky bit,
 implements the fast-path predicates locally, and emits an end-to-end
 flush sentinel + ack on the slow path.

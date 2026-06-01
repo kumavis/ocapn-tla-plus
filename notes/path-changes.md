@@ -85,7 +85,7 @@ own dispatch through it. The protocol surface decomposes into:
    resolver fires `desc:handoff-give` (3PHO) for the Promise cap.
    — **Done** (Phase B; witness-gated under flush policies — §3.10).
 3. **Listener-side install.** The existing
-   [`ReceiveNetwork`](../spec/PromiseResolution.tla) branch at
+   [`ReceiveNetwork`](../spec/Core.tla) branch at
    `msg.value.desc \in TargetWireDescs` handles `desc:import-promise`
    and `desc:export-promise` via `DescToResRef` under all policies;
    the EJavaFlush `sameConn` fast path is restricted to
@@ -236,7 +236,7 @@ that drives two `HeadPeer`s into the same chain would close the gap.
 
 ### 3.5 Wire descriptor invariants in dynamic MCs
 
-`spec/PromiseResolution.tla` defines two global invariants over
+`spec/Core.tla` defines two global invariants over
 `channels`: `WireDescriptorContract` (no `desc:handoff-give` with
 `targetHost \in {sender, receiver}`) and `OnlyKnownResolveDescriptors` (every
 non-handoff `op:resolve` descriptor is in `TargetWireDescs`). They are
@@ -321,11 +321,11 @@ Implements §1.2.b's two-party form — `ResolverResolve` emits
 listeners when a `LocalPromise` shortens to a Promise on another vat
 and every listener can receive the resolution two-party. Receive path
 was already wired (the `desc \in TargetWireDescs` branch in
-[`ReceiveNetwork`](../spec/PromiseResolution.tla) accepts both target
+[`ReceiveNetwork`](../spec/Core.tla) accepts both target
 and promise descriptors uniformly across all policies); only the
 emission side was missing.
 
-Spec delta in [`spec/PromiseResolution.tla`](../spec/PromiseResolution.tla):
+Spec delta in [`spec/Core.tla`](../spec/Core.tla):
 
 - `TargetHostPeer` / `TargetWireRefId` generalised from two-arm
   (`LocalTarget` vs else-`targetPeer`/`targetRefId`) to four-arm
@@ -384,7 +384,7 @@ new promise's host are distinct peers from the resolver, so the
 resolver must introduce the cap via `desc:handoff-give` rather than
 emitting `desc:export-promise` / `desc:import-promise` directly.
 
-Spec delta in [`spec/PromiseResolution.tla`](../spec/PromiseResolution.tla):
+Spec delta in [`spec/Core.tla`](../spec/Core.tla):
 
 - `ReceiveOpWithdrawGift` now dispatches on
   `LocalRef(self, tlr).kind`. For `LocalTarget` the reply remains
@@ -436,7 +436,7 @@ Extends `EJavaFlush` and `OpFlushProtocol` to inter-vat promise
 shortening (2-party and resolver-initiated 3-party on co-terminal
 topologies; see scope tightening below).
 
-Spec delta in [`spec/PromiseResolution.tla`](../spec/PromiseResolution.tla):
+Spec delta in [`spec/Core.tla`](../spec/Core.tla):
 
 - `firePromiseShorten` policy gate now includes `EJavaFlush`.
 - `fireOpFlush` gate accepts promise-shaped resolutions when
@@ -501,7 +501,7 @@ was fixed:
 
 ### 3.11 Phase D: re-propagation and Tribble MCs
 
-- **`RepropagatePromiseShorten`** in [`spec/PromiseResolution.tla`](../spec/PromiseResolution.tla):
+- **`RepropagatePromiseShorten`** in [`spec/Core.tla`](../spec/Core.tla):
   when `self` installs `localResolution` on `recvR` and hosts a
   `LocalPromise` `chainR` with `resolution.refId = recvR` and
   `~repropNotified`, run the same local notify/flush predicates as
@@ -682,7 +682,7 @@ now shares with Naive/Shortening/EJavaFlush (the resolver still pushes
 6. **`[s7]` vatB receives `op:resolve(targetRefId=2, desc:export-target(3))`.**
    vatB's `refs[2]` is a RemotePromise; under faithful Ridley,
    `RoutingPolicy = "OpFlushProtocol"` now takes the
-   `installNow = TRUE` arm of the op:resolve receive (`spec/PromiseResolution.tla`
+   `installNow = TRUE` arm of the op:resolve receive (`spec/Core.tla`
    around line 1257). vatB **immediately installs**
    `refs[2].localResolution = ResRef(vatB, 3)`. No embargo. No flush.
 7. `[s8]` vatB receives `seq=2` on `refs[1]`. `Route(vatB, 1)`
@@ -716,7 +716,7 @@ play. This is the same hazard `NaivePromiseResolution` exhibits;
 faithful Ridley inherits it because:
 
 - The current `fireOpResolveNow` includes `"OpFlushProtocol"` in its
-  policy gate (`spec/PromiseResolution.tla` around line 822), so the
+  policy gate (`spec/Core.tla` around line 822), so the
   resolver still eagerly pushes `op:resolve` to listeners.
 - Ridley's §9 does not specify whether the resolver pushes
   `op:resolve` eagerly or only on demand from a shortener-initiated
