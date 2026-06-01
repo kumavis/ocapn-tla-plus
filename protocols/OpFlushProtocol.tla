@@ -29,6 +29,25 @@ RoutingPolicy == "OpFlushProtocol"
 
 VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 
+----------------------------------------------------------------------------
+(* Policy hook implementations: OpFlushProtocol (faithful Ridley).
+   - InstallNow: always TRUE.  Ridley installs eagerly on op:resolve
+     receipt (the source of the FIFO race documented in §4.7).
+   - EmbargoInstead: FALSE.  OpFlushProtocol does not embargo.
+   - EnforcesChainBinderEmbargo: FALSE.
+   - ClearsChainBinderOnInstall: TRUE (legacy; unreachable under
+     faithful Ridley but kept for backward compat). *)
+
+PolicyInstallNowOnResolve(isHandoffPwTarget, isHandoffPwPromiseCap, fastPath) ==
+    TRUE
+
+PolicyEmbargoInsteadOnResolve(isHandoffPwTarget, fastPath) ==
+    FALSE
+
+PolicyEnforcesChainBinderEmbargo == FALSE
+
+PolicyClearsChainBinderOnInstall == TRUE
+
 PR == INSTANCE PromiseResolution
 
 ----------------------------------------------------------------------------

@@ -119,6 +119,41 @@
 EXTENDS Naturals, Sequences, TLC, EJavaFlushHelpers, OpFlushProtocolHelpers
 
 ----------------------------------------------------------------------------
+(* Policy hooks: declared as CONSTANT operators here; substituted at
+   INSTANCE-time by each protocols/<Policy>.tla module's same-named
+   concrete operators.  These let Core's action bodies dispatch
+   policy-specific behavior without comparing RoutingPolicy strings
+   inline.
+
+   The default substitution (no `WITH` clause needed in the policy
+   modules) auto-binds Core's CONSTANT to the policy module's operator
+   of the same name.  See protocols/EJavaFlush.tla and
+   protocols/OpFlushProtocol.tla for the concrete EJavaFlush /
+   OpFlushProtocol implementations; the other three policy modules
+   take the no-op defaults baked into the operator-of-same-name they
+   define. *)
+
+CONSTANT
+    \* op:resolve receive: should the install branch fire?  Per policy:
+    \*   Naive / Shortening / NoPromise / OpFlush: always TRUE.
+    \*   EJavaFlush: TRUE iff isHandoffPwTarget OR fastPath.
+    PolicyInstallNowOnResolve(_, _, _),
+    \* op:resolve receive: should the embargo-and-probe slow path fire?
+    \*   EJavaFlush only.  TRUE iff ~isHandoffPwTarget AND ~fastPath.
+    PolicyEmbargoInsteadOnResolve(_, _),
+    \* op:resolve receive: 0-ary policy identity flag.  EJavaFlush
+    \* returns TRUE -- under EJavaFlush a handoff-pw promise-cap
+    \* op:resolve waits if a chain binder still has a non-empty
+    \* embargo set.  Other policies return FALSE.  The actual chain-
+    \* binder check (state-level) stays in Core, gated by this flag.
+    PolicyEnforcesChainBinderEmbargo,
+    \* op:resolve install branch: 0-ary policy identity flag.
+    \* OpFlushProtocol returns TRUE (legacy clear-on-install behavior;
+    \* unreachable under faithful Ridley but kept for backward compat).
+    \* Other policies return FALSE.
+    PolicyClearsChainBinderOnInstall
+
+----------------------------------------------------------------------------
 (* Wire messages. *)
 
 OpDeliverOnly(sender, sentOnRef, seq, refId) ==
@@ -1188,34 +1223,35 @@ ReceiveNetwork ==
                             /\ isHandoffPw
                             /\ v.desc \in {"desc:import-promise",
                                            "desc:export-promise"}
+                        \* Policy-specific dispatch via CONSTANT operator
+                        \* hooks supplied by the active policy module.
                         installNow ==
-                            \/ isHandoffPwTarget
-                            \/ /\ isHandoffPwPromiseCap
-                               /\ RoutingPolicy # "EJavaFlush"
-                            \/ RoutingPolicy = "NaivePromiseResolution"
-                            \/ RoutingPolicy = "ShorteningUnsafe"
-                            \/ /\ RoutingPolicy = "EJavaFlush"
-                               /\ fastPath
-                            \/ RoutingPolicy = "OpFlushProtocol"
+                            PolicyInstallNowOnResolve(
+                                isHandoffPwTarget,
+                                isHandoffPwPromiseCap,
+                                fastPath)
                         embargoInstead ==
-                            /\ ~(isHandoffPw /\ v.desc = "desc:import-target")
-                            /\ RoutingPolicy = "EJavaFlush"
-                            /\ ~fastPath
+                            PolicyEmbargoInsteadOnResolve(
+                                isHandoffPwTarget,
+                                fastPath)
                         \* Slow path: emit downstream probe on self's own
                         \* outbox to the current resolver.  refId starts at
                         \* the resolverRefId (mirroring how a fresh
                         \* op:deliver-only is wire-tagged); ApplyRoute
-                        \* would mutate it at each forward.
+                        \* would mutate it at each forward.  Only used by
+                        \* the EJavaFlush policy module (other policies'
+                        \* PolicyEmbargoInsteadOnResolve returns FALSE).
                         probeMsg ==
                             OpEFlushProbe(self, r, entry.resolverRefId)
                         \* Block withdraw-promise Promise resolutions while
-                        \* the chain binder ref is still under EJavaFlush
-                        \* embargo (handoff-give slow path on refs[cr]).
+                        \* the chain binder ref is still under embargo.
+                        \* EJavaFlush only -- other policies' hook returns
+                        \* FALSE.
                         handoffPwBlocked ==
                             /\ isHandoffPw
                             /\ v.desc \in {"desc:import-promise",
                                            "desc:export-promise"}
-                            /\ RoutingPolicy = "EJavaFlush"
+                            /\ PolicyEnforcesChainBinderEmbargo
                             /\ \E cr \in ChainRefs \intersect DOMrefs(self) :
                                  /\ LocalRef(self, cr).kind = "RemotePromise"
                                  /\ LocalRef(self, cr).localResolution =
@@ -1258,8 +1294,7 @@ ReceiveNetwork ==
                                                ![self].refs[r].embargo =
                                                    entry.embargo \ {from}]
                                    IN /\ vats' =
-                                          IF /\ RoutingPolicy =
-                                                    "OpFlushProtocol"
+                                          IF /\ PolicyClearsChainBinderOnInstall
                                              /\ chainBinderExists
                                           THEN [vatsBase EXCEPT
                                                     ![self].refs[chainBinder]

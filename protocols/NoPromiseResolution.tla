@@ -29,6 +29,22 @@ RoutingPolicy == "NoPromiseResolution"
 
 VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 
+----------------------------------------------------------------------------
+(* Policy hook implementations.  This policy uses the no-op defaults:
+   op:resolve always installs immediately; no embargo / probe slow path;
+   no chain-binder embargo enforcement; no chain-binder clear on
+   install. *)
+
+PolicyInstallNowOnResolve(isHandoffPwTarget, isHandoffPwPromiseCap, fastPath) ==
+    TRUE
+
+PolicyEmbargoInsteadOnResolve(isHandoffPwTarget, fastPath) ==
+    FALSE
+
+PolicyEnforcesChainBinderEmbargo == FALSE
+
+PolicyClearsChainBinderOnInstall == FALSE
+
 PR == INSTANCE PromiseResolution
 
 ----------------------------------------------------------------------------

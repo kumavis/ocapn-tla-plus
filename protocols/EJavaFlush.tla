@@ -29,6 +29,27 @@ RoutingPolicy == "EJavaFlush"
 
 VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 
+----------------------------------------------------------------------------
+(* Policy hook implementations: EJavaFlush.
+   - InstallNow: only when handoff target descriptor (always installs
+     for handoff-pw target) OR fastPath.  Other cases take the slow path.
+   - EmbargoInstead: any non-handoff-pw-target op:resolve that isn't on
+     the fast path.
+   - EnforcesChainBinderEmbargo: TRUE.  Core's op:resolve receive checks
+     a non-empty chain-binder embargo set when this flag fires.
+   - ClearsChainBinderOnInstall: FALSE -- EJavaFlush relies on probe-ack
+     to lift embargoes. *)
+
+PolicyInstallNowOnResolve(isHandoffPwTarget, isHandoffPwPromiseCap, fastPath) ==
+    isHandoffPwTarget \/ (~isHandoffPwPromiseCap /\ fastPath)
+
+PolicyEmbargoInsteadOnResolve(isHandoffPwTarget, fastPath) ==
+    ~isHandoffPwTarget /\ ~fastPath
+
+PolicyEnforcesChainBinderEmbargo == TRUE
+
+PolicyClearsChainBinderOnInstall == FALSE
+
 PR == INSTANCE PromiseResolution
 
 ----------------------------------------------------------------------------
