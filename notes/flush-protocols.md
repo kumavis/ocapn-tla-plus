@@ -612,16 +612,69 @@ not only on handoff-shortenings. Concretely:
 
 The handoff-shortening case is one instance of this; the trace above
 is another. Under the broader trigger, vatA at the `ResolverResolve`
-step would fire `op:flush` to vatB before emitting `op:resolve`. The
-per-session FIFO between vatA↔vatB then sequences vatA's pre-resolve
+step fires `op:flush-resolver` to vatB before emitting `op:resolve`.
+The per-session FIFO between vatA↔vatB then sequences vatA's pre-resolve
 pipelined sends before the resolve install at vatB, so the cascade
-shortcut at vatB only opens after all old-path traffic has been
-forwarded onward, eliminating the race.
+shortcut at vatB only opens after the pre-flush traffic has been
+forwarded onward.
 
-The implementation in [§9.2](#92-implementation-in-this-spec) below
-still reflects Ridley's narrower draft trigger; the broader trigger
-would be a non-backwards-compatible spec revision and is not yet
-modelled here.
+#### Implementation (this spec)
+
+This spec implements the broader trigger as a simple flush-ack
+handshake. Wire ops:
+
+- `op:flush-resolver(targetRefId)` — sent by the resolver-holder to
+  each listener whose dispatch path through the resolving promise
+  will change.
+- `op:flush-resolver-ack(targetRefId)` — sent by the listener back to
+  the resolver-holder, immediately and statelessly. Per-session FIFO
+  does the sequencing work.
+
+State (on `LocalPromise`): reuses the existing `flushPending` set to
+track listeners we await acks from. When `ResolverResolve` fires for
+a target on a remote host, the policy hook
+`PolicyResolverInitiatedFlush` diverts the immediate-notify path:
+resolution is recorded, `flushPending` is set to the listener set,
+and `op:flush-resolver` is enqueued on each listener's outbox; `notified`
+stays `FALSE`. When the last ack arrives at the resolver, the
+`ReceiveOpFlushResolverAck` branch fires the deferred `op:resolve`
+to every listener via the shared `AppendResolveNotifications` helper.
+
+#### FIFO outcome — partial fix only
+
+Running the full suite, the broader trigger does **not** fix FIFO on
+any of the OpFlushProtocol MCs that previously violated. The reason
+is visible in the regenerated trace for
+`MC_OpFlushProtocol_3Chain_PromiseShorten`: vatA fires
+`op:flush-resolver` at s2, receives the ack at s6, emits `op:resolve`
+at s6, then **pipelines `seq=2` at s7** — after `op:resolve` is on
+the wire. Per-channel FIFO at vatB processes `op:resolve` first,
+installing the cascade shortcut; then processes `seq=2`, which
+delivers via the shortcut. Meanwhile `seq=1` (sent before the flush)
+is still bouncing through the long path. Delivered order: `[seq=2,
+seq=1]`. FIFO still violates.
+
+The flush-ack handshake catches **pre-flush** pipelined sends only
+(any `seq` vatA sent before `op:flush-resolver` arrives at vatB ahead
+of the eventual `op:resolve` install). **Post-resolve** sends still
+race: nothing prevents vatA from continuing to pipeline after the
+ack returns and the deferred `op:resolve` is on the wire.
+
+Ridley's actual draft mechanism (§9 step 2: "Fulfill the original
+resolver `r` with `p'`. This causes any further application-level
+sends on `p1` … to be buffered locally inside Alice's vat, queued
+at `p'`.") **would** catch the post-resolve race — by minting a
+fresh local promise `p'` at the resolver and routing all listener-
+side sends targeting the old `r` through an intra-vat queue at `p'`,
+draining only when `p'` itself resolves to the actual target. This
+spec doesn't implement the mint-redirect mechanism yet; the broader
+trigger is wired up via the simpler ack-only handshake, and the
+residual race is the documented limitation.
+
+So: the broader trigger in §9.1's framing is a necessary spec
+revision but not, by itself, a sufficient fix. A full implementation
+would need both the broader trigger AND Ridley's mint-redirect
+mechanism applied to the resolver-side flush.
 
 ### 9.2 Implementation in this spec
 
