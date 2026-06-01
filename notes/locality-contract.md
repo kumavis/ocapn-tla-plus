@@ -95,17 +95,14 @@ above. Reads go through the accessor operators in `lib/PeerState.tla`
   own RemoteTarget to find the eventual target host); writes
   `vats[self].refs[r]` and `channels[self][_]` (op:resolve or
   op:flush to its listeners).
-- **`SendTargetFlushProbe`** *(OpFlushProtocol only)* — actor:
-  **bound `self`**. Same locality as `ResolverResolve`; emits
-  `op:e-flush-probe` on `channels[self][targetPeer]` where
-  `targetPeer` is read out of `self`'s own RemoteTarget entry.
-  Transitions `vats[self].refs[r].flushPhase` `"idle" -> "out"`
-  (or directly to `"acked"` if `self` is itself the target host).
-- **`SendOpResolveAfterFlush`** *(OpFlushProtocol only)* — actor:
-  **bound `self`**. Preconditioned on
-  `LocalRef(self, r).flushPhase = "acked"` (set only by an inbound
-  `op:e-flush-probe-ack`); emits `op:resolve` to listeners on
-  `channels[self][_]`.
+- **`InitiateFlush`** *(OpFlushProtocol only; lives in
+  `protocols/OpFlushProtocol.tla`)* — actor: **bound `self`** (the
+  would-be shortener). Reads `LocalRef(self, r)` to check the
+  three-party resolution trigger and the `flushSent` guard; writes
+  `vats[self].refs[r].flushSent`, mints a fresh `RemotePromise`
+  placeholder at `vats[self].refs[resolveMeRefId]`, bumps `nextRefId`,
+  and emits `op:flush` on
+  `channels[self][entry.resolverPeer]`. Locality-clean.
 
 ### Network-receive actions
 

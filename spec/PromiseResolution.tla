@@ -6,10 +6,11 @@
 (*   LocalTarget    -- a sink owned by p                                   *)
 (*   RemoteTarget   -- presence for someone else's LocalTarget             *)
 (*   LocalPromise   -- p is the resolver; holds queue, listeners,         *)
-(*                     resolution, flushPending, notified, flushPhase      *)
+(*                     resolution, flushPending, notified,                  *)
+(*                     repropNotified, pipelinedListeners                  *)
 (*   RemotePromise  -- presence for someone else's LocalPromise; holds     *)
 (*                     localResolution, embargo, pending, listenSent,      *)
-(*                     fresh                                               *)
+(*                     fresh, flushSent                                    *)
 (*                                                                         *)
 (* Routing is a single dispatch over LocalRef(self, r).kind plus send-time *)
 (* recursion through any installed resolution                              *)
@@ -76,50 +77,29 @@
 (*                              limitation inherited from the underlying   *)
 (*                              protocol; see "OpFlushProtocol" for an     *)
 (*                              alternative design that addresses it.      *)
-(*   "OpFlushProtocol"         resolver-initiated alternative (Ridley     *)
-(*                              proposal, ocapn#11).  ResolverResolve      *)
-(*                              sends op:flush(r) to all listeners         *)
-(*                              instead of op:resolve.  Locality-clean:    *)
-(*                                1. Listener L receives op:flush,         *)
-(*                                   atomically sets embargo on its        *)
-(*                                   RemotePromise AND enqueues            *)
-(*                                   op:flush-ack on the same channel      *)
-(*                                   back to the resolver R.  Because      *)
-(*                                   channels[L][R] is p2p FIFO, the       *)
-(*                                   ack queues behind any of L's          *)
-(*                                   pre-flush op:deliver-only sends, so   *)
-(*                                   R is guaranteed to have processed     *)
-(*                                   them all before dequeuing the ack.    *)
-(*                                   No "is my outbox empty?" inference    *)
-(*                                   is needed; FIFO does the work.        *)
-(*                                2. Once R has received op:flush-ack      *)
-(*                                   from every listener AND R's own       *)
-(*                                   LocalPromise.queue is drained, R      *)
-(*                                   emits op:e-flush-probe on its own     *)
-(*                                   outbox to the eventual target via     *)
-(*                                   its RemoteTarget                      *)
-(*                                   (SendTargetFlushProbe).  The probe    *)
-(*                                   rides channels[R][target] AFTER all   *)
-(*                                   of R's previously-forwarded           *)
-(*                                   op:deliver-only sends.                *)
-(*                                3. Target receives op:e-flush-probe at   *)
-(*                                   its LocalTarget terminus and emits    *)
-(*                                   op:e-flush-probe-ack back to R on     *)
-(*                                   channels[target][R].                  *)
-(*                                4. R receives op:e-flush-probe-ack;      *)
-(*                                   the LocalPromise's flushPhase         *)
-(*                                   transitions "out" -> "acked".  Only   *)
-(*                                   then does SendOpResolveAfterFlush     *)
-(*                                   fire and emit op:resolve to listeners.*)
-(*                              No action infers downstream delivery from  *)
-(*                              "my outbox is empty"; every state          *)
-(*                              transition is driven by an explicit        *)
-(*                              protocol message (op:flush, op:flush-ack,  *)
-(*                              op:e-flush-probe, op:e-flush-probe-ack).   *)
-(*                              The probe + ack mechanism is shared with   *)
-(*                              EJavaFlush; only the originator's entry    *)
-(*                              kind (RemotePromise vs LocalPromise)       *)
-(*                              differs in the ack-receive dispatch.       *)
+(*   "OpFlushProtocol"         faithful implementation of Ridley's        *)
+(*                              op:flush proposal (ocapn#11; verbatim     *)
+(*                              draft in notes/flush-protocols.md §9).    *)
+(*                              Shortener-initiated: when a peer X has   *)
+(*                              learned its RemotePromise resolves to a   *)
+(*                              third party, X fires InitiateFlush       *)
+(*                              (defined in protocols/OpFlushProtocol)    *)
+(*                              and sends                                  *)
+(*                              op:flush(toDescRefId, answerPos,           *)
+(*                              resolveMeRefId) to the resolver-holder.    *)
+(*                              The resolver-holder mints a fresh         *)
+(*                              LocalPromise p' via nextRefId, sets the   *)
+(*                              old resolver's resolution to              *)
+(*                              ResRef(self, p') (intra-vat cascade       *)
+(*                              buffers future sends locally at p'), and  *)
+(*                              replies with op:resolve(resolveMeRefId,   *)
+(*                              desc:import-promise(p')) on               *)
+(*                              channels[self][from].  No probe, no       *)
+(*                              flush-ack.  Surprising result: faithful   *)
+(*                              Ridley does NOT preserve EndToEndRefFIFO  *)
+(*                              on the chain topologies this spec        *)
+(*                              exercises -- see notes/path-changes.md    *)
+(*                              §4.7 for the counterexample.              *)
 (***************************************************************************)
 
 (* EXTENDS chain:
@@ -860,8 +840,10 @@ ResolverResolve ==
                            "EJavaFlush"}
                \* Phase B/C (3-party): desc:handoff-give for Promise caps.
                \* Phase C adds EJavaFlush (immediate op:resolve; listeners
-               \* apply local chainEmbargo).  OpFlushProtocol uses
-               \* fireOpFlush instead of fireOpResolveNow for 3-party.
+               \* apply local chainEmbargo).  OpFlushProtocol under faithful
+               \* Ridley behaves like the other push-immediately policies
+               \* here (the shortener-initiated op:flush fires separately
+               \* via InitiateFlush, not as part of ResolverResolve).
                \* ListenersWitnessPipelined gates EJavaFlush 3-party only:
                \* under Naive/Shortening the resolver intentionally has
                \* no synchronization with listeners, so the witness gate
@@ -1442,11 +1424,12 @@ ReceiveNetwork ==
                             /\ isChain
                             /\ RoutingPolicy = "EJavaFlush"
                             /\ ~chainFresh
-                        \* OpFlush: after op:flush-ack the resolver may send
-                        \* handoff-give, but keep listener embargo on the
-                        \* chain ref until the withdraw-promise resolves so
-                        \* post-shorten sends stay in pending (local
-                        \* single-node condition; no flush relay).
+                        \* Under EJavaFlush the chain handoff-give slow
+                        \* path uses chainEmbargo + chainProbe (probe
+                        \* rides the old chain back through the listener's
+                        \* resolverPeer wire) to fence the path change.
+                        \* Other policies leave chainEmbargo / chainProbe
+                        \* unused.
                         chainProbe ==
                             OpEFlushProbe(self, targetRefId,
                                           chainEntry.resolverRefId)

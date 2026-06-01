@@ -654,67 +654,98 @@ its topology has no shortening race (all references are local to one
 vat).
 
 **Counterexample shape (representative of all four violations).**
-Shortest trace on `MC_OpFlushProtocol_3Chain_PromiseShorten`, topology
-`host = <<vatB, vatA, vatB>>`, `NumMessages = 2`:
+Shortest trace on `MC_OpFlushProtocol_3Chain_PromiseShorten`,
+topology `host = <<vatB, vatA, vatB>>`, `NumMessages = 2`. **Notably,
+`InitiateFlush` never fires in this trace** — Ridley's flush
+machinery is never invoked. The violation surfaces purely from the
+immediate-install behavior of `fireOpResolveNow` that OpFlushProtocol
+now shares with Naive/Shortening/EJavaFlush (the resolver still pushes
+`op:resolve` to listeners eagerly):
 
-1. vatA pipelines `seq=1` on `refs[1]` → `channels[vatA][vatB]`.
-2. vatB receives `seq=1`, enqueues on `vatB.refs[1].queue`.
-3. vatB resolves `refs[1] → ResRef(vatA, 2)`. Notifies vatA via
-   `op:resolve(1, desc:export-promise(2))` (faithful Ridley:
-   resolver-side does not push `op:flush`; that is the shortener's job).
-4. vatA receives `op:resolve`, installs `localResolution = ResRef(vatA, 2)`.
-5. vatA pipelines `seq=2` on `refs[1]`. `Route(vatA, 1)` recurses via
-   localResolution to `Route(vatA, 2)`. `vatA.refs[2]` is an
-   unresolved `LocalPromise`, so `seq=2` enqueues on
-   `vatA.refs[2].queue`.
-6. Meanwhile vatB's `ProcessPending` drains `vatB.refs[1].queue`,
-   forwarding `seq=1` onto `channels[vatB][vatA]` targeted at
-   `refs[2]`.
-7. vatA receives `seq=1` → `vatA.refs[2].queue = <<seq=2, seq=1>>`
-   (out of order: the local pipelined seq=2 entered the queue before
-   the wire-forwarded seq=1 arrived).
-8. vatA resolves `refs[2]`, drains the queue in order: `seq=2` →
-   delivered first, then `seq=1` → delivered second.
+1. `[s2]` vatA pipelines `seq=1` on `refs[1]` → `channels[vatA][vatB]`
+   targeted at `refs[1]` (vatB's LocalPromise).
+2. `[s3]` vatA's `ResolverResolve` fires for `refs[2]`: resolution =
+   `ResRef(vatB, 3)` (Target on vatB). Listener is vatB; vatA emits
+   `op:resolve(targetRefId=2, desc:export-target(refId=3))` on
+   `channels[vatA][vatB]`.
+3. `[s4]` vatA pipelines `seq=2` on `refs[1]` → `channels[vatA][vatB]`.
+   At this point vatA's `refs[1]` is still a RemotePromise with no
+   `localResolution`, so `seq=2` enters the wire targeted at vatB's
+   `refs[1]` (not the new shortcut yet).
+4. `[s5]` vatB's `ResolverResolve` fires for `refs[1]`: resolution =
+   `ResRef(vatA, 2)` (Promise on vatA). vatB has no listeners on
+   `refs[1]` so no `op:resolve` is emitted (`notified = FALSE`).
+5. `[s6]` vatB receives `seq=1` on `refs[1]`. `refs[1]` is now a
+   resolved `LocalPromise` (resolution → vatA's `refs[2]`); `Route`
+   forwards `seq=1` via wire to vatA targeted at `refs[2]` on
+   `channels[vatB][vatA]`.
+6. **`[s7]` vatB receives `op:resolve(targetRefId=2, desc:export-target(3))`.**
+   vatB's `refs[2]` is a RemotePromise; under faithful Ridley,
+   `RoutingPolicy = "OpFlushProtocol"` now takes the
+   `installNow = TRUE` arm of the op:resolve receive (`spec/PromiseResolution.tla`
+   around line 1257). vatB **immediately installs**
+   `refs[2].localResolution = ResRef(vatB, 3)`. No embargo. No flush.
+7. `[s8]` vatB receives `seq=2` on `refs[1]`. `Route(vatB, 1)`
+   recurses through `refs[1].resolution` → `Route(vatB, 2)` →
+   `refs[2].localResolution` → `Route(vatB, 3)`. `refs[3]` is a
+   `LocalTarget` → `"deliver"` tag → `seq=2` appended to `delivered`
+   directly. **seq=2 delivered.**
+8. `[s9]` vatA receives `seq=1` on `refs[2]`. `refs[2]` is vatA's own
+   resolved `LocalPromise`; `ProcessPending` forwards `seq=1` to vatB
+   targeted at `refs[3]` on `channels[vatA][vatB]`.
+9. `[s10]` vatB receives `seq=1` on `refs[3]`. LocalTarget → delivered.
+   **seq=1 delivered second.** `delivered = [seq=2, seq=1]`.
+   `EndToEndRefFIFO` violated.
 
-**Root cause.** Ridley's `op:flush` is initiated by the *shortener*
-(the peer that wants to remove itself from the chain). The shortener
-must NOT pipeline new sends through the old path until the flush
-response has arrived. But under faithful Ridley with the shortener
-modelled as the chain head, there is no such restriction in the
-spec text — the shortener never commits not to send. The local
-pipelined `seq=2` in step 5 races the wire-forwarded `seq=1`, and
-neither per-session FIFO Alice↔Bob nor the intra-vat cascade at the
-resolver-holder protects against this race.
+**Root cause.** The race is between two routes for ref-1 sends at
+vatB: the *old path* through `refs[1]` (vatB's LocalPromise) that
+forwards back to vatA's `refs[2]` for cascade through to vatB's
+`refs[3]`, and the *new path* through `refs[1].resolution`'s cascade
+that recurses through `refs[2].localResolution` directly to
+`refs[3]`. The new path is installed atomically at step 6 by an
+incoming `op:resolve`, and step 7 (a `seq=2` send still in flight
+from step 3) immediately takes it.
 
-The race is *not* the Tribble four-way limitation that Cap'n Proto's
-Disembargo addresses; it is a more basic gap: the receiver's local
-queue is fed from two sources (the wire from the resolver-holder, and
-the receiver's own local PeerSend), and Ridley's protocol does
-nothing to order those two sources.
+**`InitiateFlush` is irrelevant here.** Ridley's `op:flush` is a
+shortener-initiated mechanism for a shortener to *acquire a fresh
+resolver*, but the listener-side path-change install (step 6) happens
+the moment the listener receives `op:resolve` — which it does whether
+or not it ever planned to shorten. The protocol-level race is
+already lost before any shortener-initiated machinery comes into
+play. This is the same hazard `NaivePromiseResolution` exhibits;
+faithful Ridley inherits it because:
 
-The previous implementation's `op:e-flush-probe` machinery happened to
-fix this — by forcing intermediate hops to settle before
-`op:resolve` was emitted — but the probe is EJavaFlush's mechanism,
-not Ridley's. Adding it back to OpFlushProtocol would be exactly the
-"compensating mechanism" the user explicitly directed against.
+- The current `fireOpResolveNow` includes `"OpFlushProtocol"` in its
+  policy gate (`spec/PromiseResolution.tla` around line 822), so the
+  resolver still eagerly pushes `op:resolve` to listeners.
+- Ridley's §9 does not specify whether the resolver pushes
+  `op:resolve` eagerly or only on demand from a shortener-initiated
+  flush. The §9 text describes the shortening 3PHO flow but is silent
+  on the "ordinary listener learns about resolution" path. Our model
+  assumed eager push (matching the other policies); a strict
+  no-eager-push variant might preserve FIFO at the cost of listeners
+  never learning a resolution unless they initiate a flush.
 
-**Implications.** The published Ridley draft is sufficient for the
-specific Alice→Bob→Carol scenario described in §9 (where Bob, the
-shortener, is the only peer that sends application messages on `r`),
-but it does not generalize to chains where intermediate hops also
-forward pipelined sends originating upstream. The proposal would need
-an additional mechanism — either (a) the shortener defers new sends
-on the new path until *all* prior sends through the chain have
-settled, or (b) a probe-like end-to-end signal — to handle the
-multi-hop chain case.
+**Implications.** Ridley's published draft is sufficient for the
+specific Alice→Bob→Carol scenario in §9 where Bob is the only sender
+and the resolver never eagerly notifies anyone. It does NOT
+generalize to a chain model with eager `op:resolve` propagation; the
+listener-side immediate install reintroduces the Naive race. To make
+faithful Ridley preserve FIFO, the spec would need to either:
 
-**Caveat.** The `EnableShorten` constant + `flushSent` gate may admit
-behaviours Ridley's text would forbid (e.g. firing `InitiateFlush`
-before the chain has stabilised). We have not exhaustively cross-
-checked the trigger against §9. A stricter trigger might rescue some
-of the violations; a looser one would not. If a faithful re-reading
-of §9 supports a stricter trigger, follow-up work could narrow
-`InitiateFlush`'s precondition and re-run.
+- (a) Suppress eager `op:resolve` from the resolver under
+  OpFlushProtocol — listeners learn about resolutions only via flush
+  responses they themselves request. Listeners that never shorten
+  never learn, and never route directly; ref-1 sends keep riding the
+  chain forever.
+- (b) Add a probe-like end-to-end signal or an embargo at the
+  listener — but that is the "compensating mechanism" the user
+  directed against, and it would no longer be faithful Ridley.
+
+The user-visible takeaway: **the basic immediate-install hazard is
+unaffected by Ridley's flush**, because the flush only governs the
+shortener's path-change behaviour, not the listener's. The model
+exposes this distinction clearly.
 
 ## References
 
