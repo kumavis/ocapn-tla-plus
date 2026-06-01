@@ -122,36 +122,21 @@
 (*                              differs in the ack-receive dispatch.       *)
 (***************************************************************************)
 
-EXTENDS Naturals, Sequences, TLC, References, Network, PeerState
-
-VARIABLE lastAction
-
-CONSTANT
-    NumMessages,
-    RoutingPolicy,
-    DebugTrace,
-    EmptyInitialListeners,
-    EnableDynamicListen,
-    EnableHandoff,
-    EnableHandoffInitiate,
-    EnableRepropagate,
-    EnableShorten
-
-ASSUME NumMessages \in Nat \ {0}
-ASSUME RoutingPolicy \in {
-    "NaivePromiseResolution",
-    "NoPromiseResolution",
-    "ShorteningUnsafe",
-    "EJavaFlush",
-    "OpFlushProtocol"
-}
-ASSUME DebugTrace \in BOOLEAN
-ASSUME EmptyInitialListeners \in BOOLEAN
-ASSUME EnableDynamicListen \in BOOLEAN
-ASSUME EnableHandoff \in BOOLEAN
-ASSUME EnableHandoffInitiate \in BOOLEAN
-ASSUME EnableRepropagate \in BOOLEAN
-ASSUME EnableShorten \in BOOLEAN
+(* EXTENDS chain:
+   - lib/ (References, Network, PeerState): types, channels, vats.
+   - protocols/Common: shared CONSTANT block, lastAction VARIABLE, Mark,
+     HandoffVarsUnchanged.
+   - protocols/EJavaFlush: EJavaFlush-specific wire ops + helpers
+     (OpEFlushProbe, OpEFlushProbeAck, MarkRefNonFresh,
+     ClearRemotePromiseFresh, ListenersWitnessPipelined).
+   - protocols/OpFlushProtocol: faithful Ridley op:flush wire op +
+     shortener-side action (OpFlush, InitiateFlush).
+   The big action bodies (PeerSend, ResolverResolve, ReceiveNetwork,
+   ProcessPending, ProcessHold, RepropagatePromiseShorten, Listen,
+   HandoffInitiate) stay below because their dispatch crosses policy
+   boundaries.  See notes/flush-protocols.md for the per-policy
+   semantics. *)
+EXTENDS Naturals, Sequences, TLC, EJavaFlush, OpFlushProtocol
 
 ----------------------------------------------------------------------------
 (* Wire messages. *)
@@ -168,60 +153,16 @@ OpResolve(targetRefId, value) ==
      targetRefId |-> targetRefId,
      value |-> value]
 
-(* op:flush (Ridley shape, ocapn#11; see notes/flush-protocols.md §9).
-   Sent by the would-be shortener to the peer holding the resolver of
-   the promise being shortened.  Carries:
-     - toDescRefId   : refId of the desc:export referencing the
-                       resolver `r` on the receiver.
-     - answerPos     : positive refId at which the sender expects the
-                       flush response promise to land.
-     - resolveMeRefId: refId of the desc:import-object the sender
-                       exports to receive the response (the new
-                       resolver `r'`). *)
-OpFlush(toDescRefId, answerPos, resolveMeRefId) ==
-    [op |-> "op:flush",
-     toDescRefId |-> toDescRefId,
-     answerPos |-> answerPos,
-     resolveMeRefId |-> resolveMeRefId]
+(* op:flush, op:e-flush-probe, op:e-flush-probe-ack wire ops now live in
+   protocols/OpFlushProtocol.tla and protocols/EJavaFlush.tla
+   respectively, pulled in via EXTENDS above.  Each policy module owns
+   the wire ops that only its policy emits. *)
 
 (* v0 globally-shared refIds: subscriber and resolver name the same logical
    refId, so op:listen carries only one. *)
 OpListen(refId) ==
     [op |-> "op:listen",
      refId |-> refId]
-
-(* EJavaFlush downstream sentinel (e-on-java's "second
-   __whenMoreResolved", op-shaped).  Sent by the subscriber L on the wire
-   to its current resolver when it receives an op:resolve that requires
-   flushing; rides the same path as previously-pipelined op:deliver-only
-   sends and queues behind them at every hop.
-
-   - originPeer / originRefId: where the ack must travel back to and
-     which of the originator's refs the ack releases.  These two fields
-     are immutable as the probe is re-forwarded down the chain (they
-     play the role of a return address, the same way op:listen carries
-     its subscriber identity).  Used by both EJavaFlush (originator is
-     a subscriber holding a RemotePromise; ack lifts that promise's
-     embargo) and OpFlushProtocol (originator is a resolver holding a
-     LocalPromise; ack advances that promise's flushPhase from "out"
-     to "acked").
-   - refId: the per-hop wire refId, mutated at each forward by
-     ApplyRoute exactly like an op:deliver-only's refId is.  This is
-     what makes the probe trace the same chain as user sends. *)
-OpEFlushProbe(originPeer, originRefId, refId) ==
-    [op |-> "op:e-flush-probe",
-     originPeer |-> originPeer,
-     originRefId |-> originRefId,
-     refId |-> refId]
-
-(* Probe ack: sent by the LocalTarget host (the terminus of the chain)
-   directly back to the probe's originPeer.  Carries only the
-   originRefId so the originator can match it.  The ack does not
-   retrace the chain; it goes peer-to-peer on the direct channel from
-   terminal -> originPeer (a normal use of one's own outbox). *)
-OpEFlushProbeAck(originRefId) ==
-    [op |-> "op:e-flush-probe-ack",
-     originRefId |-> originRefId]
 
 (* Opaque 3PHO wire messages. *)
 
@@ -580,38 +521,13 @@ DeliveredRecord(msg) ==
      ref |-> msg.sentOnRef,
      seq |-> msg.seq]
 
-(* ClearRemotePromiseFresh: this peer has pipelined on its local
-   RemotePromise at refId r (e-on-java: myFreshFlag cleared on any send
-   through the imported promise handler).  Per-peer write only. *)
-ClearRemotePromiseFresh(self, refId, vats0) ==
-    LET entry == vats0[self].refs[refId]
-    IN IF /\ entry # EntryNone
-          /\ entry.kind = "RemotePromise"
-       THEN [vats0 EXCEPT ![self].refs[refId].fresh = FALSE]
-       ELSE vats0
-
-(* MarkRefNonFresh: locality-preserving sticky update on `fresh`.
-   - route.tag = "wire": clear every local RemotePromise whose paired
-     resolver wire is (route.peer, route.refId) — the import used for
-     this outbound send.
-   - route.tag = "hold": clear the RemotePromise at route.refId on self
-     (local buffer while embargoed; still "used" per e-on-java [1]).
-   Per-peer write: only vats[self].refs. *)
-MarkRefNonFresh(self, route, vats0) ==
-    IF route.tag = "wire"
-    THEN [vats0 EXCEPT
-             ![self].refs =
-                 [r \in RefIds |->
-                     IF /\ vats0[self].refs[r] # EntryNone
-                        /\ vats0[self].refs[r].kind = "RemotePromise"
-                        /\ vats0[self].refs[r].resolverPeer = route.peer
-                        /\ vats0[self].refs[r].resolverRefId = route.refId
-                     THEN [vats0[self].refs[r] EXCEPT !.fresh = FALSE]
-                     ELSE vats0[self].refs[r]]]
-    ELSE IF /\ route.tag = "hold"
-            /\ route.peer = self
-       THEN ClearRemotePromiseFresh(self, route.refId, vats0)
-    ELSE vats0
+(* ClearRemotePromiseFresh / MarkRefNonFresh have moved to
+   protocols/EJavaFlush.tla.  Their effect (clear the `fresh` bit on
+   the imported RemotePromise once this peer has pipelined through it)
+   is policy-agnostic in form -- other policies just never read the
+   `fresh` bit -- but conceptually it is the e-on-java
+   `myFreshFlag` / `EProxyHandler.isFresh` mechanism, so it lives with
+   the rest of the EJavaFlush model. *)
 
 (* ApplyRoute: layer the route.tag effects atop a starting
    (ch0, refs0, delivered0) triple, returning a record with the next
@@ -676,17 +592,8 @@ ApplyRoute(self, route, msg, ch0, vats0, delivered0) ==
                             Append(@, msg)],
                 delivered |-> delivered0]
 
-----------------------------------------------------------------------------
-Mark(rec) ==
-    IF DebugTrace THEN lastAction' = rec ELSE UNCHANGED lastAction
-
-(* Sentinel for actions that don't touch handoff-only state.  Under the    *)
-(* vats consolidation, gifts and nextGiftId are vat fields, so a handoff- *)
-(* free action implicitly leaves them alone whenever it writes to vats    *)
-(* via an EXCEPT chain that only touches refs.  This operator now only    *)
-(* covers the truly top-level nextRefId counter.                          *)
-HandoffVarsUnchanged ==
-    UNCHANGED nextRefId
+(* Mark and HandoffVarsUnchanged live in protocols/Common.tla, pulled in
+   via the EXTENDS chain above. *)
 
 ----------------------------------------------------------------------------
 (* PeerSend (HeadPeer only): originates a fresh op:deliver-only on ref 1. *)
@@ -845,15 +752,7 @@ MarkListenerPipelined(resolver, promiseRefId, from, vats0) ==
                      entry.pipelinedListeners \cup {from}]
         ELSE vats0
 
-(* ListenersWitnessPipelined: at least one listener has pipelined on its
-   local imported RemotePromise (e-on-java: !isFresh on that handler).
-   The resolver learns this only from protocol traffic on the pair —
-   pipelinedListeners on its LocalPromise — not by reading L's ref table.
-   Gates EJavaFlush Phase C 3-party emission only; OpFlushProtocol does
-   not use this witness.  See notes/path-changes.md §3.10. *)
-ListenersWitnessPipelined(resolver, promiseRefId, listeners) ==
-    LocalRef(resolver, promiseRefId).pipelinedListeners \intersect listeners
-    # {}
+(* ListenersWitnessPipelined has moved to protocols/EJavaFlush.tla. *)
 
 (* CoTerminalPromiseHost: terminal and penultimate promise share a host
    (e.g. host = <<vatB, vatC, vatC>>).  Used to gate EJavaFlush and
@@ -2083,64 +1982,6 @@ HandoffInitiate ==
                            existingRefId |-> existingRefId,
                            giftId |-> gid,
                            pw |-> pw])
-
-----------------------------------------------------------------------------
-(* InitiateFlush: shortener-initiated op:flush per Ridley (ocapn#11,        *)
-(* notes/flush-protocols.md §9).  Fires when peer `self` has learned that  *)
-(* its local promise (a RemotePromise it holds) has resolved to something  *)
-(* on a third-party peer -- "neither self nor the resolver-holder."  Send  *)
-(* op:flush to the resolver-holder asking for a fresh r' to retarget the   *)
-(* eventual handoff at.                                                    *)
-(*                                                                         *)
-(* Locality: all reads via LocalRef(self, _); writes scoped to             *)
-(* vats[self].refs[_] and channels[self][_].                               *)
-(*                                                                         *)
-(* Note on concurrent flushes: each flush mints fresh nextRefId slots, so  *)
-(* concurrent flushes from multiple peers against the same r cooperate at  *)
-(* the receiver -- but the receiver's r can only be fulfilled once (a v0  *)
-(* limitation of our intra-vat cascade).  The receive branch silently     *)
-(* drops a second flush if r is already resolved.                          *)
-InitiateFlush ==
-    /\ EnableShorten
-    /\ RoutingPolicy = "OpFlushProtocol"
-    /\ \E self \in Peers : \E r \in DOMrefs(self) :
-        /\ LocalRef(self, r).kind = "RemotePromise"
-        /\ LocalRef(self, r).localResolution # ResNone
-        /\ LocalRef(self, r).localResolution.peer # self
-        /\ LocalRef(self, r).localResolution.peer #
-              LocalRef(self, r).resolverPeer
-        /\ ~LocalRef(self, r).flushSent
-        /\ LET entry == LocalRef(self, r)
-               answerPos == nextRefId
-               resolveMe == nextRefId + 1
-           IN
-              /\ answerPos \in RefIds
-              /\ resolveMe \in RefIds
-              \* Pre-mint a RemotePromise placeholder at resolveMe so the
-              \* flush response (an op:resolve(resolveMe, ...) from the
-              \* resolver-holder) lands cleanly.  resolverPeer is the
-              \* receiver (entry.resolverPeer); resolverRefId is set
-              \* equal to resolveMe under the v0 shared-refId convention.
-              \* flushSent stays FALSE on the new entry so secondary
-              \* InitiateFlush cycles can run if desired.
-              /\ vats' =
-                   [vats EXCEPT
-                       ![self].refs[r].flushSent = TRUE,
-                       ![self].refs[resolveMe] =
-                           MkRemotePromise(entry.resolverPeer, resolveMe,
-                               ResNone, {}, << >>, FALSE, TRUE, FALSE)]
-              /\ nextRefId' = resolveMe + 1
-              /\ channels' =
-                   AppendToOutbox(channels, self, entry.resolverPeer,
-                       OpFlush(entry.resolverRefId, answerPos, resolveMe))
-              /\ UNCHANGED << host, sent, delivered >>
-              /\ HandoffVarsUnchanged
-              /\ Mark([name |-> "InitiateFlush",
-                       actor |-> self,
-                       refId |-> r,
-                       resolver |-> entry.resolverPeer,
-                       answerPos |-> answerPos,
-                       resolveMe |-> resolveMe])
 
 ----------------------------------------------------------------------------
 Init == PromiseResolutionInit
