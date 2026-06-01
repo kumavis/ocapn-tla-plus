@@ -151,7 +151,33 @@ CONSTANT
     \* OpFlushProtocol returns TRUE (legacy clear-on-install behavior;
     \* unreachable under faithful Ridley but kept for backward compat).
     \* Other policies return FALSE.
-    PolicyClearsChainBinderOnInstall
+    PolicyClearsChainBinderOnInstall,
+    \* ChainListenersFor: does this policy ever emit op:resolve to
+    \* listeners?  NoPromiseResolution returns FALSE (listeners stay
+    \* empty, no resolve fires).  Others return TRUE.
+    PolicyHasListeners,
+    \* Route: does this policy use the embargo/pending hold tag?
+    \* EJavaFlush returns TRUE; others FALSE.
+    PolicyRouteHoldsOnEmbargo,
+    \* ResolverResolve / RepropagatePromiseShorten: which policies fire
+    \* promise-shaped 2-party shortening?  TRUE for
+    \* Naive / Shortening / EJavaFlush; FALSE for NoPromise / OpFlush.
+    PolicyEmitsPromiseShortenNotify,
+    \* Same set fires promise-shaped 3-party shortening.
+    PolicyEmitsPromiseShorten3PartyNotify,
+    \* Which policies fire op:resolve eagerly on target-shaped
+    \* resolutions?  TRUE for everyone except NoPromise.
+    PolicyEmitsOpResolveOnTarget,
+    \* Which policies require the listener-pipelined witness on 3-party
+    \* promise shortening?  EJavaFlush only.
+    PolicyRequiresWitnessForShorten3Party,
+    \* Which policies allow 3-party promise shortening on any chain
+    \* position (vs. head-only on co-terminal topologies)?
+    \* Naive / Shortening do; EJavaFlush is head-only/co-terminal-only.
+    PolicyShortens3PartyAnywhere,
+    \* Handoff-give chain-form receive: does this policy embargo the
+    \* chain ref while waiting for the withdraw-promise?  EJavaFlush only.
+    PolicyChainEmbargoOnHandoffGive
 
 ----------------------------------------------------------------------------
 (* Wire messages. *)
@@ -356,7 +382,7 @@ DeliveredEntry ==
 
 ChainListenersFor[r \in ChainRefs] ==
     IF EmptyInitialListeners THEN {}
-    ELSE IF RoutingPolicy = "NoPromiseResolution" THEN {}
+    ELSE IF ~PolicyHasListeners THEN {}
     ELSE IF r = TerminalPos THEN {}
     ELSE IF r = 1 THEN {HeadPeer}
     ELSE {host[r - 1]}
@@ -412,7 +438,7 @@ Route(self, r) ==
             \* OpFlushProtocol it's the resolver-initiated equivalent.
             \* Either way, once a pending entry exists or embargo is set,
             \* subsequent sends queue behind whatever's already there.
-            IF /\ RoutingPolicy \in {"EJavaFlush", "OpFlushProtocol"}
+            IF /\ PolicyRouteHoldsOnEmbargo
                /\ \/ entry.embargo # {}
                   \/ Len(entry.pending) > 0
             THEN [tag |-> "hold", peer |-> self, refId |-> r]
@@ -829,37 +855,20 @@ ResolverResolve ==
                    /\ isPromise
                    /\ listeners # {}
                    /\ AllListenersTwoParty(self, res, listeners)
-                   /\ RoutingPolicy \in
-                          {"NaivePromiseResolution",
-                           "ShorteningUnsafe",
-                           "EJavaFlush"}
-               \* Phase B/C (3-party): desc:handoff-give for Promise caps.
-               \* Phase C adds EJavaFlush (immediate op:resolve; listeners
-               \* apply local chainEmbargo).  OpFlushProtocol under faithful
-               \* Ridley behaves like the other push-immediately policies
-               \* here (the shortener-initiated op:flush fires separately
-               \* via InitiateFlush, not as part of ResolverResolve).
-               \* ListenersWitnessPipelined gates EJavaFlush 3-party only:
-               \* under Naive/Shortening the resolver intentionally has
-               \* no synchronization with listeners, so the witness gate
-               \* would suppress real race surfaces (notes/path-changes.md
-               \* §3.10).  EJavaFlush requires the witness to ensure
-               \* listener-side embargo is reachable.
+                   /\ PolicyEmitsPromiseShortenNotify
                firePromiseShorten3Party ==
                    /\ isPromise
                    /\ listeners # {}
                    /\ \E l \in listeners :
                         NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
-                   /\ (RoutingPolicy # "EJavaFlush"
+                   /\ (~PolicyRequiresWitnessForShorten3Party
                        \/ ListenersWitnessPipelined(self, r, listeners))
-                   /\ RoutingPolicy \in
-                          {"NaivePromiseResolution",
-                           "ShorteningUnsafe",
-                           "EJavaFlush"}
+                   /\ PolicyEmitsPromiseShorten3PartyNotify
                    \* Flush policies: head-hop 3PHO only on co-terminal
-                   \* topologies (see CoTerminalPromiseHost).
-                   /\ (RoutingPolicy \in
-                           {"NaivePromiseResolution", "ShorteningUnsafe"}
+                   \* topologies (see CoTerminalPromiseHost).  Policies
+                   \* that allow shortening anywhere (Naive / Shortening)
+                   \* override the topology gate.
+                   /\ (PolicyShortens3PartyAnywhere
                        \/ /\ r = 1
                           /\ CoTerminalPromiseHost)
                \* Under faithful Ridley (notes/flush-protocols.md §9),
@@ -874,11 +883,7 @@ ResolverResolve ==
                fireOpResolveNow ==
                    \/ /\ isTarget
                       /\ listeners # {}
-                      /\ RoutingPolicy \in
-                             {"NaivePromiseResolution",
-                              "ShorteningUnsafe",
-                              "EJavaFlush",
-                              "OpFlushProtocol"}
+                      /\ PolicyEmitsOpResolveOnTarget
                    \/ firePromiseShorten
                    \/ firePromiseShorten3Party
                needsHandoff ==
@@ -952,32 +957,17 @@ RepropagatePromiseShorten ==
                firePromiseShorten ==
                    /\ isPromise
                    /\ AllListenersTwoParty(self, res, listeners)
-                   /\ RoutingPolicy \in
-                          {"NaivePromiseResolution",
-                           "ShorteningUnsafe",
-                           "EJavaFlush"}
+                   /\ PolicyEmitsPromiseShortenNotify
                firePromiseShorten3Party ==
                    /\ isPromise
                    /\ \E l \in listeners :
                         NeedsHandoffIntro(self, l, TargetHostPeer(self, res))
-                   \* EJavaFlush-only witness gate (see ResolverResolve).
-                   /\ (RoutingPolicy # "EJavaFlush"
+                   /\ (~PolicyRequiresWitnessForShorten3Party
                        \/ ListenersWitnessPipelined(self, chainR, listeners))
-                   /\ RoutingPolicy \in
-                          {"NaivePromiseResolution",
-                           "ShorteningUnsafe",
-                           "EJavaFlush"}
-               \* Under faithful Ridley (see ResolverResolve above),
-               \* OpFlushProtocol uses fireOpResolveNow like other
-               \* "push-immediately" policies.  No resolver-pushed
-               \* op:flush.
+                   /\ PolicyEmitsPromiseShorten3PartyNotify
                fireOpResolveNow ==
                    \/ /\ isTarget
-                      /\ RoutingPolicy \in
-                             {"NaivePromiseResolution",
-                              "ShorteningUnsafe",
-                              "EJavaFlush",
-                              "OpFlushProtocol"}
+                      /\ PolicyEmitsOpResolveOnTarget
                    \/ firePromiseShorten
                    \/ firePromiseShorten3Party
                needsHandoff ==
@@ -1417,7 +1407,7 @@ ReceiveNetwork ==
                             /\ chainEntry.fresh
                         chainEmbargo ==
                             /\ isChain
-                            /\ RoutingPolicy = "EJavaFlush"
+                            /\ PolicyChainEmbargoOnHandoffGive
                             /\ ~chainFresh
                         \* Under EJavaFlush the chain handoff-give slow
                         \* path uses chainEmbargo + chainProbe (probe

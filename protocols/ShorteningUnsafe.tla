@@ -30,10 +30,8 @@ RoutingPolicy == "ShorteningUnsafe"
 VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 
 ----------------------------------------------------------------------------
-(* Policy hook implementations.  This policy uses the no-op defaults:
-   op:resolve always installs immediately; no embargo / probe slow path;
-   no chain-binder embargo enforcement; no chain-binder clear on
-   install. *)
+(* Policy hook implementations: ShorteningUnsafe.
+   Same behavior as Naive but tested on longer chains. *)
 
 PolicyInstallNowOnResolve(isHandoffPwTarget, isHandoffPwPromiseCap, fastPath) ==
     TRUE
@@ -42,8 +40,15 @@ PolicyEmbargoInsteadOnResolve(isHandoffPwTarget, fastPath) ==
     FALSE
 
 PolicyEnforcesChainBinderEmbargo == FALSE
-
 PolicyClearsChainBinderOnInstall == FALSE
+PolicyHasListeners == TRUE
+PolicyRouteHoldsOnEmbargo == FALSE
+PolicyEmitsPromiseShortenNotify == TRUE
+PolicyEmitsPromiseShorten3PartyNotify == TRUE
+PolicyEmitsOpResolveOnTarget == TRUE
+PolicyRequiresWitnessForShorten3Party == FALSE
+PolicyShortens3PartyAnywhere == TRUE
+PolicyChainEmbargoOnHandoffGive == FALSE
 
 PR == INSTANCE PromiseResolution
 

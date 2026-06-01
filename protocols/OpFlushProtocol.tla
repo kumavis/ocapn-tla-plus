@@ -31,12 +31,12 @@ VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 
 ----------------------------------------------------------------------------
 (* Policy hook implementations: OpFlushProtocol (faithful Ridley).
-   - InstallNow: always TRUE.  Ridley installs eagerly on op:resolve
-     receipt (the source of the FIFO race documented in §4.7).
-   - EmbargoInstead: FALSE.  OpFlushProtocol does not embargo.
-   - EnforcesChainBinderEmbargo: FALSE.
-   - ClearsChainBinderOnInstall: TRUE (legacy; unreachable under
-     faithful Ridley but kept for backward compat). *)
+   Resolver eagerly emits op:resolve(target) (this is the source of
+   the FIFO race documented in §4.7); promise shortening is NOT done
+   via ResolverResolve here -- instead the shortener fires
+   InitiateFlush.  No embargo, no witness gate, no chain-binder
+   enforcement.  ChainBinderClearOnInstall is a legacy TRUE
+   unreachable under faithful Ridley. *)
 
 PolicyInstallNowOnResolve(isHandoffPwTarget, isHandoffPwPromiseCap, fastPath) ==
     TRUE
@@ -45,8 +45,15 @@ PolicyEmbargoInsteadOnResolve(isHandoffPwTarget, fastPath) ==
     FALSE
 
 PolicyEnforcesChainBinderEmbargo == FALSE
-
 PolicyClearsChainBinderOnInstall == TRUE
+PolicyHasListeners == TRUE
+PolicyRouteHoldsOnEmbargo == FALSE
+PolicyEmitsPromiseShortenNotify == FALSE
+PolicyEmitsPromiseShorten3PartyNotify == FALSE
+PolicyEmitsOpResolveOnTarget == TRUE
+PolicyRequiresWitnessForShorten3Party == FALSE
+PolicyShortens3PartyAnywhere == FALSE
+PolicyChainEmbargoOnHandoffGive == FALSE
 
 PR == INSTANCE PromiseResolution
 

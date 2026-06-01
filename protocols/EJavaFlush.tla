@@ -31,14 +31,15 @@ VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 
 ----------------------------------------------------------------------------
 (* Policy hook implementations: EJavaFlush.
-   - InstallNow: only when handoff target descriptor (always installs
-     for handoff-pw target) OR fastPath.  Other cases take the slow path.
-   - EmbargoInstead: any non-handoff-pw-target op:resolve that isn't on
-     the fast path.
-   - EnforcesChainBinderEmbargo: TRUE.  Core's op:resolve receive checks
-     a non-empty chain-binder embargo set when this flag fires.
-   - ClearsChainBinderOnInstall: FALSE -- EJavaFlush relies on probe-ack
-     to lift embargoes. *)
+   - InstallNow: only when handoff-pw target descriptor OR fastPath.
+   - EmbargoInstead: any non-handoff-pw-target op:resolve that isn't
+     on the fast path.
+   - Route hold check fires on non-empty embargo / pending.
+   - Promise-shorten 2-party + 3-party emission fires.
+   - 3-party requires the listener-pipelined witness gate.
+   - 3-party is head-only on co-terminal topologies.
+   - Chain-form handoff-give triggers embargo on the chain ref.
+   - Enforces chain-binder embargo on handoff-pw promise-cap receives. *)
 
 PolicyInstallNowOnResolve(isHandoffPwTarget, isHandoffPwPromiseCap, fastPath) ==
     isHandoffPwTarget \/ (~isHandoffPwPromiseCap /\ fastPath)
@@ -47,8 +48,15 @@ PolicyEmbargoInsteadOnResolve(isHandoffPwTarget, fastPath) ==
     ~isHandoffPwTarget /\ ~fastPath
 
 PolicyEnforcesChainBinderEmbargo == TRUE
-
 PolicyClearsChainBinderOnInstall == FALSE
+PolicyHasListeners == TRUE
+PolicyRouteHoldsOnEmbargo == TRUE
+PolicyEmitsPromiseShortenNotify == TRUE
+PolicyEmitsPromiseShorten3PartyNotify == TRUE
+PolicyEmitsOpResolveOnTarget == TRUE
+PolicyRequiresWitnessForShorten3Party == TRUE
+PolicyShortens3PartyAnywhere == FALSE
+PolicyChainEmbargoOnHandoffGive == TRUE
 
 PR == INSTANCE PromiseResolution
 
