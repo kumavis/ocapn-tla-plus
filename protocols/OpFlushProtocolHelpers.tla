@@ -34,4 +34,26 @@ OpFlush(toDescRefId, answerPos, resolveMeRefId) ==
      answerPos |-> answerPos,
      resolveMeRefId |-> resolveMeRefId]
 
+----------------------------------------------------------------------------
+(* Resolver-side flush handshake (notes/flush-protocols.md §9.1).
+
+   When a peer X resolves a LocalPromise r to a target on a remote
+   host, X fires op:flush-resolver to each listener and defers the
+   actual op:resolve until acks return.  The handshake serves as a
+   sequencing barrier on the per-session FIFO channel: anything X sent
+   before op:flush-resolver is processed at the listener before the
+   eventual op:resolve, so the cascade-shortcut at the listener only
+   opens after old-path traffic has been forwarded onward.
+
+   These ops carry only the target refId.  No fresh-resolver minting
+   (unlike Ridley's shortener-initiated op:flush); the existing
+   resolver `r` keeps its identity through the handshake. *)
+OpFlushResolver(targetRefId) ==
+    [op |-> "op:flush-resolver",
+     targetRefId |-> targetRefId]
+
+OpFlushResolverAck(targetRefId) ==
+    [op |-> "op:flush-resolver-ack",
+     targetRefId |-> targetRefId]
+
 ============================================================================

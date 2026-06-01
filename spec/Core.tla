@@ -178,7 +178,13 @@ CONSTANT
     PolicyShortens3PartyAnywhere,
     \* Handoff-give chain-form receive: does this policy embargo the
     \* chain ref while waiting for the withdraw-promise?  EJavaFlush only.
-    PolicyChainEmbargoOnHandoffGive
+    PolicyChainEmbargoOnHandoffGive,
+    \* Resolver-initiated flush: when a LocalPromise resolves to a target
+    \* on a different machine, does the resolver fire op:flush-resolver to
+    \* each listener and defer op:resolve until acks return?  TRUE for
+    \* OpFlushProtocol (the broader op:flush trigger discussed in
+    \* notes/flush-protocols.md §9.1); FALSE for everyone else.
+    PolicyResolverInitiatedFlush
 
 ----------------------------------------------------------------------------
 (* Wire messages. *)
@@ -363,6 +369,8 @@ Messages ==
     \cup { OpResolve(r, v) : r \in RefIds, v \in DescValues }
     \cup { OpFlush(td, ap, rm) :
             td \in RefIds, ap \in RefIds, rm \in RefIds }
+    \cup { OpFlushResolver(t) : t \in RefIds }
+    \cup { OpFlushResolverAck(t) : t \in RefIds }
     \cup { OpListen(r) : r \in RefIds }
     \cup { OpEFlushProbe(o, r0, r) :
             o \in Peers, r0 \in RefIds, r \in RefIds }
@@ -895,6 +903,22 @@ ResolverResolve ==
                notify ==
                    AppendResolveNotifications(channels, self, r, res,
                        listeners, LocalNextGiftId(self), nextRefId)
+               \* Resolver-initiated flush trigger: when a target-shaped
+               \* resolution would land on a remote peer, the resolver
+               \* fires op:flush-resolver to each listener and defers
+               \* op:resolve until acks return.  Per-session FIFO
+               \* sequences pre-resolve pipelined sends ahead of the
+               \* eventual resolve install at the listener, neutralising
+               \* the cascade-shortcut race demonstrated in
+               \* MC_OpFlushProtocol_3Chain_PromiseShorten (see
+               \* notes/flush-protocols.md §9.1).  Promise-shaped
+               \* resolutions are out of scope here -- they take the
+               \* shorten/handoff paths above when those policy hooks fire.
+               fireResolverFlush ==
+                   /\ fireOpResolveNow
+                   /\ PolicyResolverInitiatedFlush
+                   /\ isTarget
+                   /\ TargetHostPeer(self, res) # self
            IN
               /\ res # ResNone
               \* Defensive: a 3-party listener requires handoff support
@@ -906,7 +930,16 @@ ResolverResolve ==
                   \/ ~(\E l \in listeners :
                           NeedsHandoffIntro(self, l,
                               TargetHostPeer(self, res))))
-              /\ (CASE fireOpResolveNow
+              /\ (CASE fireResolverFlush
+                       -> /\ vats' =
+                              [vats EXCEPT
+                                  ![self].refs[r].resolution = res,
+                                  ![self].refs[r].flushPending = listeners]
+                          /\ channels' =
+                              AppendToManyOutboxes(channels, self, listeners,
+                                  OpFlushResolver(r))
+                          /\ UNCHANGED nextRefId
+                   [] fireOpResolveNow
                        -> /\ ListenersNotifyable(self, res, listeners)
                           /\ vats' =
                               [vats EXCEPT
@@ -920,15 +953,17 @@ ResolverResolve ==
                    [] OTHER
                        -> /\ vats' =
                               [vats EXCEPT ![self].refs[r].resolution = res]
-                          /\ UNCHANGED channels)
+                          /\ UNCHANGED channels
+                          /\ UNCHANGED nextRefId)
               /\ UNCHANGED << host, sent, delivered >>
-              /\ IF ~fireOpResolveNow \/ ~needsHandoff THEN HandoffVarsUnchanged
+              /\ IF ~fireOpResolveNow \/ ~needsHandoff \/ fireResolverFlush
+                 THEN HandoffVarsUnchanged
                  ELSE TRUE
               /\ Mark([name |-> "ResolverResolve",
                        actor |-> self,
                        refId |-> r,
                        resKind |-> IF isTarget THEN "Target" ELSE "Promise",
-                       notified |-> fireOpResolveNow])
+                       notified |-> fireOpResolveNow /\ ~fireResolverFlush])
 
 ----------------------------------------------------------------------------
 (* RepropagatePromiseShorten (Phase D): when `self` learns a downstream     *)

@@ -50,6 +50,7 @@ PolicyEmitsOpResolveOnTarget == TRUE
 PolicyRequiresWitnessForShorten3Party == FALSE
 PolicyShortens3PartyAnywhere == FALSE
 PolicyChainEmbargoOnHandoffGive == FALSE
+PolicyResolverInitiatedFlush == TRUE
 
 PR == INSTANCE Core
 
@@ -158,6 +159,93 @@ ReceiveOpFlush ==
                                 to |-> self,
                                 refId |-> msg.toDescRefId])
 
+----------------------------------------------------------------------------
+(* Resolver-initiated flush handshake (notes/flush-protocols.md §9.1).
+
+   ReceiveOpFlushResolver: listener side.  When a peer L receives
+   op:flush-resolver(targetRefId=r) from the resolver R, L acks
+   immediately.  No state change at L -- per-session FIFO from R→L
+   does the sequencing work: any messages R sent before the
+   op:flush-resolver have already been processed at L by the time the
+   ack reaches R, and the eventual op:resolve R sends after receiving
+   the ack arrives at L behind all R's intervening pipelined sends. *)
+ReceiveOpFlushResolver ==
+    \E self, from \in Peers :
+        /\ InboxNonEmpty(self, from)
+        /\ LET msg == InboxHead(self, from)
+               ch0 == InboxTail(channels, self, from)
+           IN
+              /\ msg.op = "op:flush-resolver"
+              /\ channels' =
+                   AppendToOutbox(ch0, self, from,
+                       PR!OpFlushResolverAck(msg.targetRefId))
+              /\ UNCHANGED << host, vats, sent, delivered, nextRefId >>
+              /\ PR!Mark([name |-> "ReceiveNetwork",
+                          kind |-> "flush-resolver",
+                          from |-> from,
+                          to |-> self,
+                          targetRefId |-> msg.targetRefId])
+
+(* ReceiveOpFlushResolverAck: resolver side.  Each ack removes one
+   listener from flushPending.  When flushPending empties, the
+   resolver fires the deferred op:resolve to every listener via the
+   shared AppendResolveNotifications helper and flips notified=TRUE.
+   Refused (silent drop, channel consumed) if the ack is unexpected
+   (e.g. flushPending is already empty, or the entry isn't a
+   LocalPromise). *)
+ReceiveOpFlushResolverAck ==
+    \E self, from \in Peers :
+        /\ InboxNonEmpty(self, from)
+        /\ LET msg == InboxHead(self, from)
+               ch0 == InboxTail(channels, self, from)
+           IN
+              /\ msg.op = "op:flush-resolver-ack"
+              /\ LET r == msg.targetRefId
+                     entry == LocalRef(self, r)
+                     listeners == entry.listeners \ {self}
+                     newPending == entry.flushPending \ {from}
+                     wakeup == newPending = {}
+                     notify ==
+                         PR!AppendResolveNotifications(ch0, self, r,
+                             entry.resolution, listeners,
+                             LocalNextGiftId(self), nextRefId)
+                     needsHandoff ==
+                         \E l \in listeners :
+                             PR!NeedsHandoffIntro(self, l,
+                                 PR!TargetHostPeer(self, entry.resolution))
+                     validAck ==
+                         /\ entry # EntryNone
+                         /\ entry.kind = "LocalPromise"
+                         /\ from \in entry.flushPending
+                 IN
+                    /\ (CASE validAck /\ wakeup
+                             -> /\ vats' =
+                                     [vats EXCEPT
+                                         ![self].refs[r].flushPending = {},
+                                         ![self].refs[r].notified = TRUE,
+                                         ![self].nextGiftId = notify.gidNext]
+                                /\ channels' = notify.channels
+                                /\ IF needsHandoff
+                                   THEN nextRefId' = notify.pwNext
+                                   ELSE UNCHANGED nextRefId
+                         [] validAck /\ ~wakeup
+                             -> /\ vats' =
+                                     [vats EXCEPT
+                                         ![self].refs[r].flushPending =
+                                             newPending]
+                                /\ channels' = ch0
+                                /\ UNCHANGED nextRefId
+                         [] OTHER
+                             -> /\ channels' = ch0
+                                /\ UNCHANGED << vats, nextRefId >>)
+                    /\ UNCHANGED << host, sent, delivered >>
+                    /\ PR!Mark([name |-> "ReceiveNetwork",
+                                kind |-> "flush-resolver-ack",
+                                from |-> from,
+                                to |-> self,
+                                targetRefId |-> msg.targetRefId,
+                                wakeup |-> wakeup])
+
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 ----------------------------------------------------------------------------
@@ -170,10 +258,14 @@ Next ==
     \/ PR!Next
     \/ InitiateFlush
     \/ ReceiveOpFlush
+    \/ ReceiveOpFlushResolver
+    \/ ReceiveOpFlushResolverAck
 Fairness ==
     /\ PR!Fairness
     /\ WF_vars(InitiateFlush)
     /\ WF_vars(ReceiveOpFlush)
+    /\ WF_vars(ReceiveOpFlushResolver)
+    /\ WF_vars(ReceiveOpFlushResolverAck)
 Spec == Init /\ [][Next]_vars /\ Fairness
 TypeOK == PR!TypeOK
 EndToEndRefFIFO == PR!EndToEndRefFIFO

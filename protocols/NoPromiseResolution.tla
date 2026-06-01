@@ -45,6 +45,7 @@ PolicyEmitsOpResolveOnTarget == FALSE
 PolicyRequiresWitnessForShorten3Party == FALSE
 PolicyShortens3PartyAnywhere == FALSE
 PolicyChainEmbargoOnHandoffGive == FALSE
+PolicyResolverInitiatedFlush == FALSE
 
 PR == INSTANCE Core
 
