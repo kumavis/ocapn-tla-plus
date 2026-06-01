@@ -112,17 +112,22 @@ Set via the `RoutingPolicy` constant in
   buffered `pending`. Holds for linear chains; the Tribble four-way
   scenario is a known inherited limitation (see
   [`notes/path-changes.md`](notes/path-changes.md) §3.1).
-- **`"OpFlushProtocol"`** — resolver-initiated alternative
-  (Ridley proposal, ocapn#11). `ResolverResolve` emits `op:flush(r)`
-  to listeners instead of `op:resolve`; each listener atomically
-  sets `embargo` and enqueues `op:flush-ack` on the same channel
-  (FIFO carries the ordering). Once all acks return and the
-  resolver's own queue is drained, the resolver emits an
-  `op:e-flush-probe` to the terminal and waits for the matching
-  `op:e-flush-probe-ack`; only then does it emit `op:resolve` to
-  listeners. Locality-clean: every state transition is driven by
-  an explicit protocol message; no peer reads another peer's
-  channel state. Holds for linear chains.
+- **`"OpFlushProtocol"`** — faithful implementation of Ridley's
+  `op:flush` proposal (ocapn#11). **Shortener-initiated**: when a peer
+  X learns its `RemotePromise` resolves to a third party, X may fire
+  `InitiateFlush`, sending `op:flush(to-desc, answer-pos,
+  resolve-me-desc)` to the resolver-holder. The resolver-holder mints
+  a fresh `p'` / `r'`, fulfills the old `r` with `p'` (intra-vat
+  cascade buffers future sends locally at `p'`), and replies with
+  `op:resolve(resolve-me-desc, desc:import-promise(p'))`. After the
+  response, X performs a normal 3PHO targeting `r'` instead of `r`.
+  See `notes/flush-protocols.md` §9 for the verbatim Ridley draft and
+  §9.1 for implementation notes. **Surprising result**: the protocol
+  as specified does NOT preserve `EndToEndRefFIFO` on the chain
+  topologies this spec exercises (see `notes/path-changes.md` §4.7
+  for the counterexample). Four of the five OpFlushProtocol MCs
+  violate FIFO under faithful Ridley; only the single-vat-listener
+  topology passes.
 
 ## Message ordering invariant
 
@@ -168,17 +173,14 @@ What the spec currently covers:
 
 What's deferred — see [`notes/path-changes.md`](notes/path-changes.md):
 
-- Inter-vat distributed promise shortening Phases A–D are modelled
-  (flush propagation is per-node local conditions only; no
-  cross-node `op:flush` relay). Tribble MCs:
-  `MC_EJavaFlush_TribbleFourWay` violates FIFO (faithful
-  `DelayedRedirector`); `MC_OpFlushProtocol_TribbleFourWay` passes
-  (see `notes/path-changes.md` §3.11).  Note: the OpFlushProtocol
-  Tribble pass is **safety-only**; its `.cfg` omits `EventualDelivery`
-  because per-node flush + re-propagation can stutter under weak
-  fairness while FIFO still holds.  Read it as "no FIFO inversion
-  under any reachable schedule" rather than "every send eventually
-  reaches the terminal".
+- Inter-vat distributed promise shortening Phases A–D are modelled.
+  Tribble MCs: `MC_EJavaFlush_TribbleFourWay` violates FIFO
+  (faithful `DelayedRedirector` limitation). Under faithful Ridley
+  (the new `OpFlushProtocol` semantics) `MC_OpFlushProtocol_TribbleFourWay`
+  **also violates** FIFO — Ridley's `op:flush` as specified does not
+  protect against the shortener's own local PeerSend overtaking
+  in-flight wire-forwards. See `notes/path-changes.md` §4.7 for the
+  trace and root-cause analysis.
 - Per-peer refId namespaces (mechanical translation, currently global).
 - Ref-scoped flush drainage (currently whole-channel-empty).
 - Multi-sender FIFO MCs.

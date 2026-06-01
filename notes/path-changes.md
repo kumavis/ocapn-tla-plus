@@ -613,6 +613,109 @@ The EJavaFlush 3-party gap likely needs the same staged
 flush-on-shorten that OpFlushProtocol applies. Fixing it is out of
 scope for this review pass and is tracked as a follow-up.
 
+### §4.7 Faithful Ridley op:flush — findings
+
+The `OpFlushProtocol` policy was rewritten to faithfully implement
+Ridley's draft (see `notes/flush-protocols.md` §9, transcribed
+verbatim from ocapn#11 comments 4344960376 + 4442041860). The previous
+implementation was a separate resolver-pushed design that used
+`op:e-flush-probe` / `op:e-flush-probe-ack` for an end-to-end drain
+proof — a mechanism Ridley's proposal does not have. Per user
+direction, the new implementation adds no compensating mechanisms.
+This section documents what the model actually shows under faithful
+Ridley.
+
+**Implementation summary.** `InitiateFlush` action fires shortener-side
+when peer X holds a `RemotePromise` whose `localResolution.peer` is a
+third party (not X, not the resolver-holder) and `~entry.flushSent`.
+On `op:flush` receipt, the resolver-holder mints a fresh
+`LocalPromise` `p'`, sets the old resolver's `resolution =
+ResRef(self, p')` (the standard intra-vat promise cascade then
+buffers future sends at `p'`), and replies with `op:resolve(resolveMe,
+desc:import-promise(p'))`. No probe; no listener-side flush-ack
+handshake. The drain proof rests on per-session FIFO and the
+intra-vat queue cascade, exactly as Ridley §9 describes.
+
+**MC outcomes.**
+
+| MC | Before (resolver-pushed) | After (faithful Ridley) |
+|---|---|---|
+| `MC_OpFlushProtocol_3Chain_PromiseShorten` | pass | **violation** |
+| `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party` | pass | **violation** |
+| `MC_OpFlushProtocol_4Chain` | pass | **violation** |
+| `MC_OpFlushProtocol_TribbleFourWay` | pass (safety only) | **violation** |
+| `MC_OpFlushProtocol_SameVatListener` | pass | pass (same 35/57) |
+
+The four "before → violation" transitions are the finding: **Ridley's
+`op:flush` proposal AS SPECIFIED in the cited comments does NOT
+preserve `EndToEndRefFIFO` in any of the chain-shaped topologies this
+spec exercises.** The `SameVatListener` MC still passes only because
+its topology has no shortening race (all references are local to one
+vat).
+
+**Counterexample shape (representative of all four violations).**
+Shortest trace on `MC_OpFlushProtocol_3Chain_PromiseShorten`, topology
+`host = <<vatB, vatA, vatB>>`, `NumMessages = 2`:
+
+1. vatA pipelines `seq=1` on `refs[1]` → `channels[vatA][vatB]`.
+2. vatB receives `seq=1`, enqueues on `vatB.refs[1].queue`.
+3. vatB resolves `refs[1] → ResRef(vatA, 2)`. Notifies vatA via
+   `op:resolve(1, desc:export-promise(2))` (faithful Ridley:
+   resolver-side does not push `op:flush`; that is the shortener's job).
+4. vatA receives `op:resolve`, installs `localResolution = ResRef(vatA, 2)`.
+5. vatA pipelines `seq=2` on `refs[1]`. `Route(vatA, 1)` recurses via
+   localResolution to `Route(vatA, 2)`. `vatA.refs[2]` is an
+   unresolved `LocalPromise`, so `seq=2` enqueues on
+   `vatA.refs[2].queue`.
+6. Meanwhile vatB's `ProcessPending` drains `vatB.refs[1].queue`,
+   forwarding `seq=1` onto `channels[vatB][vatA]` targeted at
+   `refs[2]`.
+7. vatA receives `seq=1` → `vatA.refs[2].queue = <<seq=2, seq=1>>`
+   (out of order: the local pipelined seq=2 entered the queue before
+   the wire-forwarded seq=1 arrived).
+8. vatA resolves `refs[2]`, drains the queue in order: `seq=2` →
+   delivered first, then `seq=1` → delivered second.
+
+**Root cause.** Ridley's `op:flush` is initiated by the *shortener*
+(the peer that wants to remove itself from the chain). The shortener
+must NOT pipeline new sends through the old path until the flush
+response has arrived. But under faithful Ridley with the shortener
+modelled as the chain head, there is no such restriction in the
+spec text — the shortener never commits not to send. The local
+pipelined `seq=2` in step 5 races the wire-forwarded `seq=1`, and
+neither per-session FIFO Alice↔Bob nor the intra-vat cascade at the
+resolver-holder protects against this race.
+
+The race is *not* the Tribble four-way limitation that Cap'n Proto's
+Disembargo addresses; it is a more basic gap: the receiver's local
+queue is fed from two sources (the wire from the resolver-holder, and
+the receiver's own local PeerSend), and Ridley's protocol does
+nothing to order those two sources.
+
+The previous implementation's `op:e-flush-probe` machinery happened to
+fix this — by forcing intermediate hops to settle before
+`op:resolve` was emitted — but the probe is EJavaFlush's mechanism,
+not Ridley's. Adding it back to OpFlushProtocol would be exactly the
+"compensating mechanism" the user explicitly directed against.
+
+**Implications.** The published Ridley draft is sufficient for the
+specific Alice→Bob→Carol scenario described in §9 (where Bob, the
+shortener, is the only peer that sends application messages on `r`),
+but it does not generalize to chains where intermediate hops also
+forward pipelined sends originating upstream. The proposal would need
+an additional mechanism — either (a) the shortener defers new sends
+on the new path until *all* prior sends through the chain have
+settled, or (b) a probe-like end-to-end signal — to handle the
+multi-hop chain case.
+
+**Caveat.** The `EnableShorten` constant + `flushSent` gate may admit
+behaviours Ridley's text would forbid (e.g. firing `InitiateFlush`
+before the chain has stabilised). We have not exhaustively cross-
+checked the trigger against §9. A stricter trigger might rescue some
+of the violations; a looser one would not. If a faithful re-reading
+of §9 supports a stricter trigger, follow-up work could narrow
+`InitiateFlush`'s precondition and re-run.
+
 ## References
 
 - [Promise Shortening — ocapn#11](https://github.com/ocapn/ocapn/issues/11)
