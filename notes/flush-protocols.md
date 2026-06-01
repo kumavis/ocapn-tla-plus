@@ -569,7 +569,61 @@ plus
 Full draft is mirrored at
 [`kumavis/ocapn` fork — `notes/op-flush-spec.md`](https://github.com/kumavis/ocapn/blob/claude/ocapn-message-ordering-WNRFV/notes/op-flush-spec.md).
 
-### 9.1 Implementation in this spec
+### 9.1 The missing trigger: resolve-to-remote-value
+
+Ridley's draft frames `op:flush` exclusively in terms of *shortening
+third-party handoffs* — Alice→Bob→Carol, where Bob (the would-be
+shortener) pulls the flush before initiating a 3PHO into Carol. The
+draft is precise about that one scenario but doesn't generalise: the
+trigger condition is "Bob is about to shorten via handoff," not "a
+resolution path is about to change shape."
+
+The hazard `op:flush` is supposed to neutralise — *path-changes
+racing in-flight traffic on the old path* — exists for **any**
+resolution where the target value sits on a different machine than
+the resolver, regardless of handoffs. The
+[`MC_OpFlushProtocol_3Chain_PromiseShorten`](../models/MC_OpFlushProtocol_3Chain_PromiseShorten.tla)
+counterexample (see [`path-changes.md`](path-changes.md) §4.7) is a
+minimal witness:
+
+- vatA hosts `r=2` (`LocalPromise`). vatA resolves `r=2` to a target
+  on vatB (`desc:export-target(refId=3)`). No handoff. No 3PHO.
+- vatA's listener for `r=2` is vatB. vatA emits
+  `op:resolve(2, desc:export-target(3))` to vatB.
+- vatB receives the resolve and installs `r=2.localResolution =
+  ResRef(vatB, 3)`. The chain `r=1 → vatA:r=2 → vatB:r=3` closes at
+  vatB: new sends on `r=1` cascade-shortcut to a vatB-local delivery
+  instead of taking the wire round-trip vatB→vatA→vatB.
+- Old long-path traffic (`r=1` sends vatB had already forwarded to
+  vatA on `r=2`) races the new short-path traffic (`r=1` sends that
+  arrive after the resolve install and shortcut directly).
+- Ridley's `InitiateFlush` cannot fire: no peer holds a `RemotePromise`
+  whose `localResolution` points to a third party. The trigger
+  condition simply isn't satisfied for this race.
+
+**Proposed broader trigger.** `op:flush` should fire whenever a peer
+resolves a `LocalPromise` to a value whose host is a different machine,
+not only on handoff-shortenings. Concretely:
+
+> When peer X is about to emit `op:resolve` for a `LocalPromise r`
+> whose resolution's target peer is ≠ X, X first runs the flush
+> handshake (with each listener whose dispatch path through `r` will
+> change), and only emits `op:resolve` after the handshake completes.
+
+The handoff-shortening case is one instance of this; the trace above
+is another. Under the broader trigger, vatA at the `ResolverResolve`
+step would fire `op:flush` to vatB before emitting `op:resolve`. The
+per-session FIFO between vatA↔vatB then sequences vatA's pre-resolve
+pipelined sends before the resolve install at vatB, so the cascade
+shortcut at vatB only opens after all old-path traffic has been
+forwarded onward, eliminating the race.
+
+The implementation in [§9.2](#92-implementation-in-this-spec) below
+still reflects Ridley's narrower draft trigger; the broader trigger
+would be a non-backwards-compatible spec revision and is not yet
+modelled here.
+
+### 9.2 Implementation in this spec
 
 The `OpFlushProtocol` routing policy in
 [`spec/Core.tla`](../spec/Core.tla)
@@ -624,8 +678,10 @@ directed against.
 The implication: Ridley's draft works for the specific Alice→Bob→Carol
 scenario described in §9 (where Bob is the only sender), but a future
 revision needs an additional mechanism — either a shortener-side
-defer on the new path until the chain has settled, or a probe-like
-end-to-end signal — to generalize to multi-hop chains.
+defer on the new path until the chain has settled, a probe-like
+end-to-end signal, or the broader resolve-to-remote-value trigger
+described in [§9.1](#91-the-missing-trigger-resolve-to-remote-value) —
+to generalize to multi-hop chains.
 
 ## 10. `EJavaFlush` — subscriber-initiated, faithful DelayedRedirector model
 
@@ -872,7 +928,7 @@ Ridley's `op:flush` proposal addresses the limitation by inverting the
 direction of the handshake (the shortener, not the resolver, sends
 `op:flush`) and minting a fresh resolver at the upstream peer. This
 spec's `OpFlushProtocol` is a separate resolver-pushed variant — see
-§9.1 for the structural differences and the verbatim Ridley draft at
+§9.2 for the structural differences and the verbatim Ridley draft at
 §9. The "OpFlushProtocol passes Tribble" claim is FIFO-safety only;
 liveness (`EventualDelivery`) is not checked on the Tribble MC because
 re-propagation + per-node flush can stutter under weak fairness while

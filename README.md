@@ -122,8 +122,9 @@ and dispatch live in [`spec/Core.tla`](spec/Core.tla):
   cascade buffers future sends locally at `p'`), and replies with
   `op:resolve(resolve-me-desc, desc:import-promise(p'))`. After the
   response, X performs a normal 3PHO targeting `r'` instead of `r`.
-  See `notes/flush-protocols.md` §9 for the verbatim Ridley draft and
-  §9.1 for implementation notes. **Surprising result**: the protocol
+  See `notes/flush-protocols.md` §9 for the verbatim Ridley draft,
+  §9.1 for the missing resolve-to-remote-value trigger, and §9.2 for
+  implementation notes. **Surprising result**: the protocol
   as specified does NOT preserve `EndToEndRefFIFO` on the chain
   topologies this spec exercises (see `notes/path-changes.md` §4.7
   for the counterexample). Four of the five OpFlushProtocol MCs
