@@ -176,50 +176,72 @@ def _grp(pat: str, msg: str, default: str = "?") -> str:
 
 
 def summarize_msg(msg: str) -> str:
-    op = _grp(r'op\s*\|\->\s*"([^"]*)"', msg)
+    op_pat = r'op\s*\|\->\s*"([^"]*)"'
+    seq_pat = r'seq\s*\|\->\s*(\d+)'
+    sor_pat = r'sentOnRef\s*\|\->\s*(\d+)'
+    rid_pat = r'refId\s*\|\->\s*(\d+)'
+    tri_pat = r'targetRefId\s*\|\->\s*(\d+)'
+    desc_pat = r'desc\s*\|\->\s*"([^"]*)"'
+    gifter_pat = r'gifter\s*\|\->\s*"([^"]*)"'
+    targethost_pat = r'targetHost\s*\|\->\s*"([^"]*)"'
+    giftid_pat = r'giftId\s*\|\->\s*(\d+)'
+    pw_pat = r'pw\s*\|\->\s*(\d+)'
+    recipient_pat = r'recipient\s*\|\->\s*"([^"]*)"'
+    tlri_pat = r'targetLocalRefId\s*\|\->\s*(\d+)'
+    wpr_pat = r'withdrawPromiseRefId\s*\|\->\s*(\d+)'
+    answer_pat = r'answerPos\s*\|\->\s*(\d+)'
+    rmd_pat = r'resolveMeRefId\s*\|\->\s*(\d+)'
+    tdr_pat = r'toDescRefId\s*\|\->\s*(\d+)'
+
+    op = _grp(op_pat, msg)
     if op == "op:deliver-only":
-        return (
-            f'op:deliver-only(seq={_grp(r"seq\s*\|\->\s*(\d+)", msg)}, '
-            f'sentOnRef={_grp(r"sentOnRef\s*\|\->\s*(\d+)", msg)}, '
-            f'refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)})'
-        )
+        seq = _grp(seq_pat, msg)
+        sor = _grp(sor_pat, msg)
+        rid = _grp(rid_pat, msg)
+        return f'op:deliver-only(seq={seq}, sentOnRef={sor}, refId={rid})'
     if op == "op:resolve":
-        target = _grp(r"targetRefId\s*\|\->\s*(\d+)", msg)
-        desc = _grp(r'desc\s*\|\->\s*"([^"]*)"', msg)
+        target = _grp(tri_pat, msg)
+        desc = _grp(desc_pat, msg)
         if desc in ("desc:import-target", "desc:export-target",
-                    "desc:import-promise", "desc:export-promise"):
-            return (
-                f'op:resolve(targetRefId={target}, {desc}'
-                f'(refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)}))'
-            )
+                    "desc:import-promise", "desc:export-promise",
+                    "desc:import-object"):
+            rid = _grp(rid_pat, msg)
+            return f'op:resolve(targetRefId={target}, {desc}(refId={rid}))'
         if desc == "desc:handoff-give":
+            gifter = _grp(gifter_pat, msg)
+            th = _grp(targethost_pat, msg)
+            gid = _grp(giftid_pat, msg)
+            pw = _grp(pw_pat, msg)
             return (
                 f'op:resolve(targetRefId={target}, desc:handoff-give'
-                f'(gifter={_grp(r"gifter\s*\|\->\s*\"([^\"]*)\"", msg)}, '
-                f'targetHost={_grp(r"targetHost\s*\|\->\s*\"([^\"]*)\"", msg)}, '
-                f'giftId={_grp(r"giftId\s*\|\->\s*(\d+)", msg)}, '
-                f'pw={_grp(r"pw\s*\|\->\s*(\d+)", msg)}))'
+                f'(gifter={gifter}, targetHost={th}, giftId={gid}, pw={pw}))'
             )
         return f'op:resolve(targetRefId={target})'
     if op == "op:flush":
-        return f'op:flush(refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)})'
+        td = _grp(tdr_pat, msg)
+        ap = _grp(answer_pat, msg)
+        rm = _grp(rmd_pat, msg)
+        return f'op:flush(toDescRefId={td}, answerPos={ap}, resolveMeRefId={rm})'
     if op == "op:flush-ack":
-        return f'op:flush-ack(refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)})'
+        rid = _grp(rid_pat, msg)
+        return f'op:flush-ack(refId={rid})'
     if op == "op:listen":
-        return f'op:listen(refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)})'
+        rid = _grp(rid_pat, msg)
+        return f'op:listen(refId={rid})'
     if op == "op:deposit-gift":
+        gid = _grp(giftid_pat, msg)
+        rcp = _grp(recipient_pat, msg)
+        tlri = _grp(tlri_pat, msg)
+        pw = _grp(pw_pat, msg)
         return (
-            f'op:deposit-gift(giftId={_grp(r"giftId\s*\|\->\s*(\d+)", msg)}, '
-            f'recipient={_grp(r"recipient\s*\|\->\s*\"([^\"]*)\"", msg)}, '
-            f'targetLocalRefId={_grp(r"targetLocalRefId\s*\|\->\s*(\d+)", msg)}, '
-            f'pw={_grp(r"pw\s*\|\->\s*(\d+)", msg)})'
+            f'op:deposit-gift(giftId={gid}, recipient={rcp}, '
+            f'targetLocalRefId={tlri}, pw={pw})'
         )
     if op == "op:withdraw-gift":
-        return (
-            f'op:withdraw-gift(giftId={_grp(r"giftId\s*\|\->\s*(\d+)", msg)}, '
-            f'gifter={_grp(r"gifter\s*\|\->\s*\"([^\"]*)\"", msg)}, '
-            f'pw={_grp(r"withdrawPromiseRefId\s*\|\->\s*(\d+)", msg)})'
-        )
+        gid = _grp(giftid_pat, msg)
+        gifter = _grp(gifter_pat, msg)
+        pw = _grp(wpr_pat, msg)
+        return f'op:withdraw-gift(giftId={gid}, gifter={gifter}, pw={pw})'
     return op
 
 
