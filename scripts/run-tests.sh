@@ -29,7 +29,7 @@ if [[ ! -f "$TLA_JAR" ]]; then
   exit 2
 fi
 
-CP="$TLA_JAR:$ROOT/lib:$ROOT/spec:$ROOT/models:$ROOT/tests"
+CP="$TLA_JAR:$ROOT/lib:$ROOT/protocols:$ROOT/spec:$ROOT/models:$ROOT/tests"
 WORKERS="${WORKERS:-auto}"
 LOG_DIR="$ROOT/.tlc-logs"
 mkdir -p "$LOG_DIR"
