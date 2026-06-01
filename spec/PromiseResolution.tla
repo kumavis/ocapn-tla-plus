@@ -116,7 +116,7 @@
    HandoffInitiate) stay below because their dispatch crosses policy
    boundaries.  See notes/flush-protocols.md for the per-policy
    semantics. *)
-EXTENDS Naturals, Sequences, TLC, EJavaFlush, OpFlushProtocol
+EXTENDS Naturals, Sequences, TLC, EJavaFlushHelpers, OpFlushProtocolHelpers
 
 ----------------------------------------------------------------------------
 (* Wire messages. *)

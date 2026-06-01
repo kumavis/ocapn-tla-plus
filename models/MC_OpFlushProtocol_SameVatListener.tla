@@ -34,7 +34,7 @@ EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
 EnableShorten == TRUE
 MaxGifts == 0
-RoutingPolicy == "OpFlushProtocol"
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -48,7 +48,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE OpFlushProtocol
 
 Init ==
     /\ PS!Init

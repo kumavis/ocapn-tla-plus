@@ -55,7 +55,6 @@ EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
 EnableShorten == FALSE
-RoutingPolicy == "EJavaFlush"
 
 CONSTANT DebugTrace  \* set in .cfg
 
@@ -70,7 +69,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE EJavaFlush
 
 Init ==
     /\ PS!Init

@@ -1,6 +1,6 @@
-------------------------- MODULE OpFlushProtocol -------------------------
+------------------------- MODULE ShorteningUnsafe -------------------------
 (***************************************************************************)
-(* Policy module for `OpFlushProtocol`.                                   *)
+(* Policy module for `ShorteningUnsafe`.                                   *)
 (*                                                                         *)
 (* MCs instantiate this module (instead of spec/PromiseResolution.tla)    *)
 (* to pin RoutingPolicy.  The choice of policy is encoded in which        *)
@@ -25,7 +25,7 @@ CONSTANT
     EnableRepropagate,
     EnableShorten
 
-RoutingPolicy == "OpFlushProtocol"
+RoutingPolicy == "ShorteningUnsafe"
 
 VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 

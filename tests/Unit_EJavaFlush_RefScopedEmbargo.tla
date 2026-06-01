@@ -77,7 +77,7 @@ EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
 EnableShorten == FALSE
-RoutingPolicy == "EJavaFlush"
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -91,7 +91,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE EJavaFlush
 
 Init ==
     /\ host = <<"vatB", "vatC">>

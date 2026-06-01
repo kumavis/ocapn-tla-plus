@@ -43,7 +43,7 @@ EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
 EnableShorten == FALSE
-RoutingPolicy == "ShorteningUnsafe"
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -57,7 +57,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE ShorteningUnsafe
 
 Init ==
     /\ PS!Init
