@@ -74,18 +74,103 @@ ProcessHold ==
                                   THEN msg.seq
                                   ELSE 0])
 
+----------------------------------------------------------------------------
+(* EJavaFlush-specific receive branches.  Extracted from Core's big
+   ReceiveNetwork dispatch; each is now its own top-level action with
+   its own `\E self, from \in Peers` wrapper.  TLC semantics are
+   unchanged: each disjunct of Next is mutually-exclusive by msg.op
+   anyway, so splitting into separate actions doesn't change the
+   reachable state space.
+
+   ReceiveEFlushProbe: the EJavaFlush slow-path sentinel.  Rides the
+   pipelined path exactly like an op:deliver-only -- dispatch by Route
+   over LocalRef(self, r), then ApplyRoute.  Terminal "deliver" tag at
+   a LocalTarget is intercepted by ApplyRoute (polymorphic on msg.op)
+   to emit OpEFlushProbeAck back to msg.originPeer on `self`'s own
+   outbox, rather than appending to `delivered`. *)
+ReceiveEFlushProbe ==
+    \E self, from \in Peers :
+        /\ InboxNonEmpty(self, from)
+        /\ LET msg == InboxHead(self, from)
+               ch0 == InboxTail(channels, self, from)
+           IN
+              /\ msg.op = "op:e-flush-probe"
+              /\ LET r == msg.refId
+                     entry == LocalRef(self, r)
+                     route == PR!Route(self, r)
+                     after ==
+                         PR!ApplyRoute(self, route, msg, ch0, vats, delivered)
+                 IN
+                    /\ entry # EntryNone
+                    /\ route.tag \in {"deliver", "wire", "queue", "hold"}
+                    /\ channels' = after.channels
+                    /\ vats' = after.vats
+                    /\ delivered' = after.delivered
+                    /\ UNCHANGED << host, sent >>
+                    /\ PR!HandoffVarsUnchanged
+                    /\ PR!Mark([name |-> "ReceiveNetwork",
+                                kind |-> "e-flush-probe",
+                                from |-> from,
+                                to |-> self,
+                                refId |-> r,
+                                tag |-> route.tag,
+                                originPeer |-> msg.originPeer,
+                                originRefId |-> msg.originRefId])
+
+(* ReceiveEFlushProbeAck: lifts the refid-scoped embargo on the
+   originator's RemotePromise.  Removes entry.resolverPeer from the
+   embargo set (the source whose op:resolve originally staged this
+   probe).  If the local state has moved on (embargo cleared via
+   another path), the ack is consumed but vats is left unchanged. *)
+ReceiveEFlushProbeAck ==
+    \E self, from \in Peers :
+        /\ InboxNonEmpty(self, from)
+        /\ LET msg == InboxHead(self, from)
+               ch0 == InboxTail(channels, self, from)
+           IN
+              /\ msg.op = "op:e-flush-probe-ack"
+              /\ LET r == msg.originRefId
+                     entry == LocalRef(self, r)
+                     liftEmbargo ==
+                         /\ entry # EntryNone
+                         /\ entry.kind = "RemotePromise"
+                         /\ entry.embargo # {}
+                 IN
+                    /\ (CASE liftEmbargo
+                             -> vats' =
+                                    [vats EXCEPT
+                                        ![self].refs[r].embargo =
+                                            entry.embargo
+                                                \ {entry.resolverPeer}]
+                         [] OTHER -> UNCHANGED vats)
+                    /\ channels' = ch0
+                    /\ UNCHANGED << host, sent, delivered >>
+                    /\ PR!HandoffVarsUnchanged
+                    /\ PR!Mark([name |-> "ReceiveNetwork",
+                                kind |-> "e-flush-probe-ack",
+                                from |-> from,
+                                to |-> self,
+                                refId |-> msg.originRefId])
+
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 ----------------------------------------------------------------------------
 (* Re-exports for operators defined in PromiseResolution.tla.
 
-   Init is unchanged; Next adds the EJavaFlush-only ProcessHold action;
-   Fairness adds the weak-fairness conjunct for it; Spec rebuilds from
-   Init/Next/Fairness so the policy-specific behaviour is reachable. *)
+   Init unchanged; Next adds the EJavaFlush-only actions; Fairness adds
+   the matching WF conjuncts; Spec rebuilds. *)
 
 Init == PR!Init
-Next == PR!Next \/ ProcessHold
-Fairness == PR!Fairness /\ WF_vars(ProcessHold)
+Next ==
+    \/ PR!Next
+    \/ ProcessHold
+    \/ ReceiveEFlushProbe
+    \/ ReceiveEFlushProbeAck
+Fairness ==
+    /\ PR!Fairness
+    /\ WF_vars(ProcessHold)
+    /\ WF_vars(ReceiveEFlushProbe)
+    /\ WF_vars(ReceiveEFlushProbeAck)
 Spec == Init /\ [][Next]_vars /\ Fairness
 TypeOK == PR!TypeOK
 EndToEndRefFIFO == PR!EndToEndRefFIFO

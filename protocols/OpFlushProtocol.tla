@@ -81,15 +81,77 @@ InitiateFlush ==
                           answerPos |-> answerPos,
                           resolveMe |-> resolveMe])
 
+----------------------------------------------------------------------------
+(* OpFlushProtocol-specific receive: op:flush (resolver-holder side).
+   Extracted from Core's big ReceiveNetwork dispatch.
+
+   On receipt at the resolver-holder, the receive mints a fresh LocalPromise
+   p' via nextRefId, sets the old resolver `r`'s resolution to
+   ResRef(self, p') (the standard intra-vat queue cascade now buffers
+   future sends locally at p'), and replies with op:resolve(resolveMeRefId,
+   desc:import-promise(p')) on channels[self][from].
+
+   Refused (silent drop, channel consumed) if the old `r` does not exist
+   at self as an unresolved LocalPromise -- a second concurrent flush
+   against the same r cannot fulfill r twice (Ridley §9 v0 limitation). *)
+ReceiveOpFlush ==
+    \E self, from \in Peers :
+        /\ InboxNonEmpty(self, from)
+        /\ LET msg == InboxHead(self, from)
+               ch0 == InboxTail(channels, self, from)
+           IN
+              /\ msg.op = "op:flush"
+              /\ LET r == msg.toDescRefId
+                     rm == msg.resolveMeRefId
+                     entry == LocalRef(self, r)
+                     freshP == nextRefId
+                     validFlush ==
+                         /\ entry # EntryNone
+                         /\ entry.kind = "LocalPromise"
+                         /\ entry.resolution = ResNone
+                         /\ freshP \in RefIds
+                 IN
+                    /\ (CASE validFlush
+                             -> /\ vats' =
+                                     [vats EXCEPT
+                                         ![self].refs[r].resolution =
+                                             ResRef(self, freshP),
+                                         ![self].refs[r].notified = TRUE,
+                                         ![self].refs[freshP] =
+                                             MkLocalPromise(<< >>, {},
+                                                 ResNone, {}, FALSE,
+                                                 FALSE, {})]
+                                /\ nextRefId' = freshP + 1
+                                /\ channels' =
+                                     AppendToOutbox(ch0, self, from,
+                                         PR!OpResolve(rm,
+                                             PR!DescImportPromise(freshP)))
+                         [] OTHER
+                             -> /\ channels' = ch0
+                                /\ UNCHANGED << vats, nextRefId >>)
+                    /\ UNCHANGED << host, sent, delivered >>
+                    /\ PR!Mark([name |-> "ReceiveNetwork",
+                                kind |-> "flush",
+                                from |-> from,
+                                to |-> self,
+                                refId |-> msg.toDescRefId])
+
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 ----------------------------------------------------------------------------
 (* Re-exports.  Init unchanged; Next adds OpFlushProtocol-only
-   InitiateFlush; Fairness adds the matching WF; Spec rebuilds. *)
+   InitiateFlush and ReceiveOpFlush; Fairness adds matching WF;
+   Spec rebuilds. *)
 
 Init == PR!Init
-Next == PR!Next \/ InitiateFlush
-Fairness == PR!Fairness /\ WF_vars(InitiateFlush)
+Next ==
+    \/ PR!Next
+    \/ InitiateFlush
+    \/ ReceiveOpFlush
+Fairness ==
+    /\ PR!Fairness
+    /\ WF_vars(InitiateFlush)
+    /\ WF_vars(ReceiveOpFlush)
 Spec == Init /\ [][Next]_vars /\ Fairness
 TypeOK == PR!TypeOK
 EndToEndRefFIFO == PR!EndToEndRefFIFO
