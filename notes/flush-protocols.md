@@ -629,6 +629,262 @@ variant the policy was written to model. See
 [`path-changes.md`](path-changes.md) §3.10–3.11 and §4 for the design
 history.
 
+#### 9.1.1 Triggering event is different
+
+The divergence runs deeper than wire shape. The two protocols fire on
+different events:
+
+- **Ridley.** The flush is triggered by the *shortener* (Bob) deciding
+  to remove itself from the path. Bob initiates `op:flush` because
+  Bob has learned of a shorter route to the eventual target and wants
+  to install it as a 3PHO. The resolver `r` may still be entirely
+  unresolved when Bob starts. There is no requirement that Alice (the
+  resolver-holder) has any information about Carol; Alice just
+  cooperates with the flush handshake.
+- **This spec's `OpFlushProtocol`.** The flush is triggered by the
+  *resolver* (`H`) firing `ResolverResolve` or `RepropagatePromise
+  Shorten`. `H` already knows the resolution target `R'` and is
+  preparing to push it downstream. Listeners are passive — they do not
+  decide to shorten; they receive `op:flush` because `H` has decided to
+  resolve.
+
+These are different protocols semantically, not just structurally.
+"Shortener-initiated path removal" (Ridley) and "resolver-initiated
+listener-flush before notification" (this spec) describe distinct
+control-flow events that just happen to use the same wire-op name.
+
+#### 9.1.2 Side-by-side trace (Alice resolver of p1, Bob holding desc:export to Alice's r, Carol hosts the eventual target)
+
+Both protocols on the same topology. Bob is the peer that will hold
+the post-shortening direct path to Carol.
+
+**Ridley `op:flush` (verbatim from §9):**
+
+```
+[t0]  Bob has previously been pipelining messages on p1; they flow
+      Bob -> Alice and Alice forwards them to wherever p1's eventual
+      target is (currently: nowhere, p1 unresolved).
+[t1]  Bob: send op:flush(to-desc=desc:export(r), answer-pos=K,
+                         resolve-me-desc=desc:import-object(M))
+      to Alice.   [wire: channels[Bob][Alice] gains op:flush]
+[t2]  Alice receives op:flush.  Atomically:
+        - mint fresh p'/r'
+        - fulfill r with p'        (any future Alice-sends on p1 now
+                                    buffer locally at p')
+        - export r' at NEW slot N  (N != r's slot)
+        - deliver flush-response carrying desc:import-object(N) at
+          Bob's M and at Bob's promise K
+      [wire: channels[Alice][Bob] gains op:resolve(M, desc:import-
+       object(N)) and op:deliver(K, ...) -- in practice one message
+       carries both per CapTP answer-pos semantics]
+[t3]  Bob receives flush-response.  Per-session FIFO Alice->Bob:
+      every message Alice had sent on Alice->Bob direction prior to
+      its op:flush handling has arrived at Bob.  Bob is now safe to
+      start the handoff.
+[t4]  Bob: op:deposit-gift(p2 [Bob's new local promise representing
+      Carol's target]) -> Carol over Bob<->Carol session.
+[t5]  Bob: desc:handoff-give(...) targeting r' (NOT r!) -> Alice,
+      either inline on the forwarded stream or directly on Alice<->Bob.
+[t6]  Alice processes handoff-give:
+        - open (or reuse) session Alice<->Carol
+        - op:withdraw-gift -> Carol, addressed at r'
+        - withdraw promise p''
+[t7]  Carol resolves p'' to the gift.  r' resolves with p''.  p'
+      transitively resolves to Carol's gift.  The messages Alice
+      buffered at p' (between [t2] and [t7]) drain to Carol over
+      Alice<->Carol in original send order.
+```
+
+Roundtrips: 1 (Bob⇄Alice for the flush) + standard 3PHO (Bob→Carol
+deposit, Bob→Alice handoff-give, Alice→Carol withdraw, Carol→Alice
+withdraw response).
+New wire material: `op:flush`, flush response (a CapTP-standard
+`op:resolve` / `op:deliver` reply).
+New refs minted: `p'` / `r'` at Alice (one fresh resolver per flush).
+GC: `r` is implicitly retired.
+
+**This spec's `OpFlushProtocol`, same topology:**
+
+```
+[t0]  Bob has previously been pipelining messages on p1; they flow
+      Bob -> Alice and Alice forwards them to wherever p1 is routed.
+[t1]  Alice (= resolver H) decides to resolve pa = p1 to a Target on
+      Carol.  Fires ResolverResolve.  flushPending := {Bob}.
+      [wire: channels[Alice][Bob] gains op:flush(refId=p1)]
+[t2]  Bob receives op:flush(p1).  Atomically:
+        - vats[Bob].refs[p1].embargo := embargo \cup {Alice}
+        - enqueue op:flush-ack(p1) on channels[Bob][Alice]
+      Future sends from Bob through refs[p1] hold-route into
+      vats[Bob].refs[p1].pending.
+      [wire: channels[Bob][Alice] gains op:flush-ack]
+[t3]  Alice receives op:flush-ack(p1).  flushPending := flushPending \
+      {Bob} = {}.  (FIFO-after-acks guarantees any prior Bob-pipelined
+      sends on p1 have been dequeued by Alice and forwarded.)
+[t4]  Alice drains pa.queue locally (intra-vat cascade).
+      Precondition for next step now holds.
+[t5]  Alice fires SendTargetFlushProbe:
+      [wire: channels[Alice][Carol] gains op:e-flush-probe(originPeer=
+       Alice, originRefId=pa, refId=Carol's-target-refId)]
+      flushPhase: idle -> out.
+[t6]  Carol receives op:e-flush-probe.  ApplyRoute "deliver" branch
+      emits ack directly back to Alice.
+      [wire: channels[Carol][Alice] gains op:e-flush-probe-ack]
+[t7]  Alice receives op:e-flush-probe-ack.  flushPhase: out -> acked.
+[t8]  Alice fires SendOpResolveAfterFlush.  For listener Bob:
+        - allocate giftId G; deposit gift at Carol
+          [wire: channels[Alice][Carol] gains op:deposit-gift(G, Bob,
+           Carol-targetWireRefId, pw=fresh)]
+        - emit op:resolve(p1, desc:handoff-give(Carol, G, pw)) to Bob
+          [wire: channels[Alice][Bob] gains op:resolve]
+[t9]  Bob receives op:resolve carrying desc:handoff-give:
+        - mint pw at Bob's refs[pw]  (RemotePromise(targetHost=Carol))
+        - vats[Bob].refs[p1].localResolution := ResRef(Bob, pw)
+        - vats[Bob].refs[p1].embargo := embargo \ {Alice} = {}
+        - emit op:withdraw-gift -> Carol addressed at pw
+          [wire: channels[Bob][Carol] gains op:withdraw-gift]
+[t10] Carol receives op:withdraw-gift; resolves pw with the deposited
+      gift; emits op:resolve(pw, desc:import-target(Carol, target-
+      refId)) -> Bob.
+      [wire: channels[Carol][Bob] gains op:resolve]
+[t11] Bob receives op:resolve(pw, desc:import-target(...)).  Installs
+      vats[Bob].refs[pw].localResolution := ResRef(Carol, ...).
+      Drains vats[Bob].refs[p1].pending to Carol via route through pw.
+```
+
+Roundtrips: 1 (Alice→Bob op:flush, Bob→Alice flush-ack) + 1
+(Alice→Carol probe, Carol→Alice probe-ack) + standard 3PHO (deposit,
+withdraw, response).
+New wire material: `op:flush`, `op:flush-ack`, `op:e-flush-probe`,
+`op:e-flush-probe-ack` (four new wire ops, none of them Ridley's).
+New refs minted: none at the resolver; Bob mints `pw` on receipt of
+handoff-give (this is normal 3PHO, not flush-specific).
+GC: no implicit retirement; existing refIds keep their slots.
+
+#### 9.1.3 Consequences of the divergence
+
+- **Where the buffer lives.** Ridley puts the buffer at the *upstream*
+  vat (Alice's `p'`), where it sits in the standard promise-queue
+  infrastructure with no special embargo flag. This spec puts it at
+  the *downstream* vat (Bob's `vats[Bob].refs[p1].pending`), gated by
+  an `embargo` set. Same FIFO outcome on a linear chain, different
+  memory pressure profile under load: Ridley pushes back on the
+  upstream peer, this spec pushes back on the downstream peer.
+- **Resource allocation.** Ridley mints a fresh promise/resolver pair
+  per flush and exports `r'` at a new table slot. Each flush therefore
+  costs one export-table slot at Alice plus one import-table slot at
+  Bob. This spec mints nothing flush-specific; the existing chain
+  refs are reused. State-space cost in the model is correspondingly
+  lower for this spec — but a real implementation of Ridley would
+  also need GC accounting to retire `r` cleanly.
+- **GC semantics.** Ridley's flush carries an implicit
+  `op:gc-export(r)`. Bob MUST stop addressing `r` after `op:flush`.
+  This spec's `op:flush` is non-destructive — `r` and the existing
+  pa stay live throughout the handshake and afterward. The model has
+  no analog of the implicit GC and would not catch a bug where Bob
+  continued to address `r` after flush.
+- **Concurrent flushes from different shorteners.** Ridley scales
+  naturally: two downstream peers Bob1 and Bob2 can independently
+  shorten the same `r`, each receiving their own fresh `r'_1`,
+  `r'_2`; Alice handles both. This spec serializes flushes at the
+  resolver via `flushPending` / `flushPhase`; concurrent
+  `ResolverResolve` invocations on the same `pa` are blocked. The
+  refId-scoped embargo set on the listener side (§9.1) is what lets
+  multiple flushes from different upstream sources coexist on the
+  same listener-ref — but the resolver side does not currently
+  support multiple concurrent flushes on the same `pa`.
+- **Trust / failure modes.** Ridley's drain proof is per-session FIFO.
+  If the Alice↔Bob session is severed and re-established, the
+  guarantee evaporates and any new session must reset shortener
+  intent. This spec's drain proof is an explicit
+  `op:e-flush-probe`/ack pair routed through the chain — robust to
+  session reset only if the probe state survives the reset. Neither
+  protocol is modelled with session failure; both would need
+  extension.
+- **Composition over n-hop chains.** Ridley says: each intermediate
+  peer that wants to remove itself from a chain sends its own
+  `op:flush` upstream before its own 3PHO. The cascade is wire-
+  explicit. This spec uses `RepropagatePromiseShorten` (Phase D, gated
+  by `EnableRepropagate`) so each intermediate hop runs its own
+  resolver-side flush when its own predicates fire — no `op:flush`
+  message ever crosses more than one hop. Same end-to-end safety
+  property on the topologies tested, different wire pattern. See
+  §10.4 and `path-changes.md` §3.10.
+- **Direction of the safety guarantee.** Ridley's flush is *forward*
+  (downstream): the shortener flushes the *upstream* path before
+  installing the new *downstream* path. This spec's `OpFlushProtocol`
+  is *backward*: the resolver flushes the *downstream* path (its
+  listeners) before installing a *downstream* resolution. The
+  hazards they prevent are mirror images of each other.
+
+#### 9.1.4 What the MC suite actually verifies
+
+The OpFlushProtocol-flavored MCs (`MC_OpFlushProtocol_3Chain_PromiseShorten`,
+`MC_OpFlushProtocol_3Chain_PromiseShorten_3Party`,
+`MC_OpFlushProtocol_4Chain`, `MC_OpFlushProtocol_TribbleFourWay`,
+`MC_OpFlushProtocol_SameVatListener`) all verify properties of *this
+spec's* protocol — the resolver-pushed listener-flush + end-to-end
+probe variant. They do **not** verify Ridley's proposal. A claim like
+"OpFlushProtocol passes Tribble four-way" should be read as "the
+resolver-pushed variant in this spec preserves FIFO on the four-way
+topology under the per-node-flush + `RepropagatePromiseShorten`
+substitute for Ridley's wire-explicit cascade." Whether *Ridley's*
+proposal passes the same MC is an open question this spec does not
+answer.
+
+In particular, the OpFlushProtocol MCs do not verify:
+
+- That fresh-resolver minting + implicit GC are safe (those mechanisms
+  are not modelled).
+- That the per-session FIFO drain proof works (this spec uses an
+  explicit probe/ack instead).
+- That Ridley's wire-explicit chain cascade behaves correctly on
+  longer chains (this spec uses `RepropagatePromiseShorten`).
+- That the upstream peer (Alice) tolerates concurrent flushes from
+  multiple shorteners (the resolver side serializes via
+  `flushPending`).
+
+#### 9.1.5 Evolution path toward a faithful Ridley implementation
+
+A separate routing policy `RidleyFlush` (or similar) would be needed.
+The core changes from `OpFlushProtocol`:
+
+1. **Move the flush trigger.** Instead of firing inside `ResolverResolve`
+   at the resolver, add a new action `HandoffInitiate` precondition
+   that emits `op:flush` from the shortener to the resolver before
+   the existing `op:deposit-gift` step. The trigger condition is "the
+   shortener has decided to install a shorter path," modelled as a
+   nondeterministic action gate.
+2. **Add fresh-resolver minting at the receiver.** On `op:flush`
+   receipt, the resolver allocates a fresh `(p', r')` pair: extend
+   `nextRefId` semantics to mint two coupled refs (a `LocalPromise`
+   and its conceptual resolver). Fulfill the old `r` with `p'` —
+   model the "any further sends buffer locally" via the existing
+   `LocalPromise.queue` cascade (§3).
+3. **Drop the `embargo` flag.** Ridley's mechanism does not need an
+   embargo flag at the downstream peer; buffering happens naturally
+   at the upstream peer's `p'` queue. The current `embargo : SUBSET
+   Peers` field can stay on `RemotePromise` for EJavaFlush use, but
+   `RidleyFlush` would not touch it.
+4. **Replace the probe/ack with the flush response.** Add a flush-
+   response wire op carrying the new `desc:import-object(r')`. Bob
+   waits for this response before sending `op:deposit-gift`. No
+   end-to-end probe; per-session FIFO Alice↔Bob is the proof.
+5. **Implicit GC of the old resolver.** Either (a) add an action that
+   atomically removes the old `r` from the export table on `op:flush`
+   receipt, or (b) add an invariant `NoSendsToFlushedResolver` and
+   verify the model never violates it.
+6. **Wire-explicit cascade.** Each intermediate peer that wants to
+   shorten sends its own `op:flush` upstream. The
+   `RepropagatePromiseShorten` action becomes unnecessary — the
+   cascade is driven by the shorteners' chain-walking, not by per-
+   node local conditions at resolvers.
+
+Estimated scope: ~400–600 lines of new TLA+, two or three new wire-
+op constructors, three or four new MCs to verify the Ridley-specific
+properties (fresh-resolver allocation, implicit GC, n-hop cascade,
+concurrent shortener flushes). Approximately the same surface as the
+current `OpFlushProtocol` implementation.
+
 
 
 ## 10. `EJavaFlush` — subscriber-initiated, faithful DelayedRedirector model
