@@ -40,7 +40,7 @@
 (*   vats[vatB].refs[2] = RemoteTarget(vatC, 2)                            *)
 (*   vats[vatC].refs[2] = LocalTarget                                      *)
 (*                                                                         *)
-(* Expected behavior under RoutingPolicy = "EJavaFlush":                   *)
+(* Expected behavior under the EJavaFlush policy:                          *)
 (*   vatA receives op:resolve(1, desc:handoff-give(vatB, vatC, 1, 3)).    *)
 (*   targetRefId = 1, pw = 3, isChain = TRUE.  Chain-form handoff-give   *)
 (*   consults vats[vatA].refs[1].fresh, NOT vats[vatA].refs[2].fresh:    *)

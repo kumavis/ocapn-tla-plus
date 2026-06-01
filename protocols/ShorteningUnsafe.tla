@@ -8,8 +8,7 @@
 (*                                                                         *)
 (* The big actions and dispatch live in spec/Core.tla, which this module  *)
 (* wraps via INSTANCE with policy-hook operators substituted for Core's   *)
-(* CONSTANT hooks.  See notes/refactor-plan-inversion.md for the          *)
-(* rationale.                                                              *)
+(* CONSTANT hooks.                                                        *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, TLC, References, Network, PeerState

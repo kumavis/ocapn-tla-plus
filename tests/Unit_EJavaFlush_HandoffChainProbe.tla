@@ -1,7 +1,7 @@
 ------------------------ MODULE Unit_EJavaFlush_HandoffChainProbe ------------------------
 (***************************************************************************)
 (* Unit: joint witness for the chain-form desc:handoff-give slow path     *)
-(* under RoutingPolicy = "EJavaFlush", per notes/path-changes.md §3.7.    *)
+(* under the EJavaFlush policy, per notes/path-changes.md §3.7.           *)
 (*                                                                         *)
 (* Unit_EJavaFlush_EmbargoFires already witnesses that the embargo bit    *)
 (* on vats[recipient].refs[targetRefId] flips to TRUE on this branch.    *)

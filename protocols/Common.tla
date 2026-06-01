@@ -12,9 +12,8 @@
 (*                                                                         *)
 (* Per-protocol code lives in protocols/<Policy>.tla.  The big actions     *)
 (* dispatch via policy-identity Boolean hooks declared as CONSTANTs in     *)
-(* spec/Core.tla and substituted per policy.  There is no RoutingPolicy   *)
-(* CONSTANT -- the choice of policy is the choice of which                 *)
-(* protocols/<Policy>.tla module the MC INSTANCEs.                         *)
+(* spec/Core.tla and substituted per policy; the choice of policy is the   *)
+(* choice of which protocols/<Policy>.tla module the MC INSTANCEs.         *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, TLC, References, Network, PeerState

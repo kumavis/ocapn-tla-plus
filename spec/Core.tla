@@ -123,8 +123,8 @@ EXTENDS Naturals, Sequences, TLC, EJavaFlushHelpers, OpFlushProtocolHelpers
 (* Policy hooks: declared as CONSTANT operators here; substituted at
    INSTANCE-time by each protocols/<Policy>.tla module's same-named
    concrete operators.  These let Core's action bodies dispatch
-   policy-specific behavior without comparing RoutingPolicy strings
-   inline.
+   policy-specific behavior without policy identifiers visible in the
+   action code.
 
    The default substitution (no `WITH` clause needed in the policy
    modules) auto-binds Core's CONSTANT to the policy module's operator
