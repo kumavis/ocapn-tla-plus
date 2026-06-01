@@ -640,46 +640,6 @@ ProcessPending ==
                                ELSE 0])
 
 ----------------------------------------------------------------------------
-(* ProcessHold: drain one message from a RemotePromise.pending whose
-   embargo has been lifted (OpFlushProtocol: after op:resolve installs
-   localResolution and clears embargo). *)
-
-ProcessHold ==
-    \E self \in Peers : \E r \in DOMrefs(self) :
-        /\ LocalRef(self, r).kind = "RemotePromise"
-        /\ LocalRef(self, r).embargo = {}
-        /\ Len(LocalRef(self, r).pending) > 0
-        /\ LET entry == LocalRef(self, r)
-               msg == Head(entry.pending)
-               restPending == Tail(entry.pending)
-               route ==
-                   IF entry.localResolution # ResNone
-                   THEN Route(self, entry.localResolution.refId)
-                   ELSE [tag |-> "wire",
-                         peer |-> entry.resolverPeer,
-                         refId |-> entry.resolverRefId]
-               vatsSrc == [vats EXCEPT ![self].refs[r].pending = restPending]
-               after == ApplyRoute(self, route, msg, channels, vatsSrc, delivered)
-           IN
-              \* Disallow "hold" here: if localResolution chains into another
-              \* embargoed RemotePromise we keep the action disabled (the
-              \* outer embargo will lift first).
-              /\ route.tag \in {"deliver", "wire", "queue"}
-              /\ channels' = after.channels
-              /\ vats' = after.vats
-              /\ delivered' = after.delivered
-              /\ UNCHANGED << host, sent >>
-              /\ HandoffVarsUnchanged
-              /\ Mark([name |-> "ProcessHold",
-                       actor |-> self,
-                       refId |-> r,
-                       tag |-> route.tag,
-                       op |-> msg.op,
-                       seq |-> IF "seq" \in DOMAIN msg
-                               THEN msg.seq
-                               ELSE 0])
-
-----------------------------------------------------------------------------
 (* ResolverResolve: peer p (= host[r]) resolves its LocalPromise at refId r.
    Behavior depends on the resolution's kind (Target vs Promise),
    RoutingPolicy, and listener set. *)
@@ -1969,13 +1929,15 @@ HandoffInitiate ==
 ----------------------------------------------------------------------------
 Init == PromiseResolutionInit
 
+(* Core Next: policy-agnostic actions only.  Each policy module under
+   protocols/ composes its own Next that adds policy-specific extra
+   actions (e.g. EJavaFlush adds ProcessHold; OpFlushProtocol adds
+   InitiateFlush). *)
 Next ==
     \/ PeerSend
     \/ ResolverResolve
     \/ ReceiveNetwork
     \/ ProcessPending
-    \/ ProcessHold
-    \/ InitiateFlush
     \/ RepropagatePromiseShorten
     \/ Listen
     \/ HandoffInitiate
@@ -1983,15 +1945,14 @@ Next ==
 (* Fairness: weak fairness on every action that can move a message toward
    delivery.  Exposed as a named operator so MCs that override Init can
    still pick up the same fairness assumptions (via PS!Fairness) without
-   restating them. *)
+   restating them.  Policy modules compose their own Fairness adding
+   WF_vars for their policy-specific actions. *)
 Fairness ==
     /\ WF_vars(PeerSend)
     /\ WF_vars(ResolverResolve)
     /\ WF_vars(ReceiveNetwork)
     /\ WF_vars(ProcessPending)
-    /\ WF_vars(InitiateFlush)
     /\ WF_vars(RepropagatePromiseShorten)
-    /\ WF_vars(ProcessHold)
     /\ WF_vars(Listen)
     /\ WF_vars(HandoffInitiate)
 

@@ -32,14 +32,61 @@ VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 PR == INSTANCE PromiseResolution
 
 ----------------------------------------------------------------------------
-(* Re-exports for operators defined in PromiseResolution.tla (NOT
-   inherited via the lib/ EXTENDS chain).  Operators that come through
-   EXTENDS are visible directly through `PS!OpName` without re-export. *)
+(* EJavaFlush-specific action: ProcessHold.
+   Drains one message from a RemotePromise.pending whose embargo has been
+   lifted (probe-ack receipt cleared the source from the refid-scoped
+   embargo set).  Only fires under EJavaFlush -- other policies never
+   populate `pending`.  Defined here so the EJavaFlush policy module
+   exclusively owns this action; Core's Next no longer includes it. *)
+
+ProcessHold ==
+    \E self \in Peers : \E r \in DOMrefs(self) :
+        /\ LocalRef(self, r).kind = "RemotePromise"
+        /\ LocalRef(self, r).embargo = {}
+        /\ Len(LocalRef(self, r).pending) > 0
+        /\ LET entry == LocalRef(self, r)
+               msg == Head(entry.pending)
+               restPending == Tail(entry.pending)
+               route ==
+                   IF entry.localResolution # ResNone
+                   THEN PR!Route(self, entry.localResolution.refId)
+                   ELSE [tag |-> "wire",
+                         peer |-> entry.resolverPeer,
+                         refId |-> entry.resolverRefId]
+               vatsSrc == [vats EXCEPT ![self].refs[r].pending = restPending]
+               after == PR!ApplyRoute(self, route, msg, channels, vatsSrc, delivered)
+           IN
+              \* Disallow "hold" here: if localResolution chains into another
+              \* embargoed RemotePromise we keep the action disabled (the
+              \* outer embargo will lift first).
+              /\ route.tag \in {"deliver", "wire", "queue"}
+              /\ channels' = after.channels
+              /\ vats' = after.vats
+              /\ delivered' = after.delivered
+              /\ UNCHANGED << host, sent >>
+              /\ PR!HandoffVarsUnchanged
+              /\ PR!Mark([name |-> "ProcessHold",
+                          actor |-> self,
+                          refId |-> r,
+                          tag |-> route.tag,
+                          op |-> msg.op,
+                          seq |-> IF "seq" \in DOMAIN msg
+                                  THEN msg.seq
+                                  ELSE 0])
+
+vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
+
+----------------------------------------------------------------------------
+(* Re-exports for operators defined in PromiseResolution.tla.
+
+   Init is unchanged; Next adds the EJavaFlush-only ProcessHold action;
+   Fairness adds the weak-fairness conjunct for it; Spec rebuilds from
+   Init/Next/Fairness so the policy-specific behaviour is reachable. *)
 
 Init == PR!Init
-Next == PR!Next
-Spec == PR!Spec
-Fairness == PR!Fairness
+Next == PR!Next \/ ProcessHold
+Fairness == PR!Fairness /\ WF_vars(ProcessHold)
+Spec == Init /\ [][Next]_vars /\ Fairness
 TypeOK == PR!TypeOK
 EndToEndRefFIFO == PR!EndToEndRefFIFO
 EventualDelivery == PR!EventualDelivery
