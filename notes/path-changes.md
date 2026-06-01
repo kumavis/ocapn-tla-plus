@@ -535,7 +535,7 @@ Under `NaivePromiseResolution` and `ShorteningUnsafe` the resolver has
 no synchronization with listeners by design — the race surface is the
 whole point. Requiring a pipelined-listener witness suppressed real
 violations and made the policies appear safer than they are. The gate
-is now `RoutingPolicy = "EJavaFlush" => ListenersWitnessPipelined(...)`
+is now `PolicyRequiresWitnessForShorten3Party => ListenersWitnessPipelined(...)`
 (applied via disjunction). Naive/Shortening MCs still find their
 expected `EndToEndRefFIFO` violations; under EJavaFlush the witness
 gate is unchanged (listener-side embargo reachability still requires
@@ -681,9 +681,10 @@ now shares with Naive/Shortening/EJavaFlush (the resolver still pushes
    `channels[vatB][vatA]`.
 6. **`[s7]` vatB receives `op:resolve(targetRefId=2, desc:export-target(3))`.**
    vatB's `refs[2]` is a RemotePromise; under faithful Ridley,
-   `RoutingPolicy = "OpFlushProtocol"` now takes the
-   `installNow = TRUE` arm of the op:resolve receive (`spec/Core.tla`
-   around line 1257). vatB **immediately installs**
+   the OpFlushProtocol policy's `PolicyInstallNowOnResolve` hook
+   returns TRUE, so the op:resolve receive (`spec/Core.tla` around
+   line 1257) takes the `installNow = TRUE` arm. vatB **immediately
+   installs**
    `refs[2].localResolution = ResRef(vatB, 3)`. No embargo. No flush.
 7. `[s8]` vatB receives `seq=2` on `refs[1]`. `Route(vatB, 1)`
    recurses through `refs[1].resolution` → `Route(vatB, 2)` →

@@ -38,16 +38,17 @@
 (* ../notes/locality-contract.md; that note also lists the patterns that  *)
 (* are explicitly forbidden and the reviewer checklist for new actions.   *)
 (*                                                                         *)
-(* RoutingPolicy:                                                          *)
-(*   "NaivePromiseResolution"  listener installs localResolution on        *)
+(* Policies (one module per row under protocols/; the active policy is    *)
+(* determined by which protocols/<Policy>.tla module the MC INSTANCEs):   *)
+(*   NaivePromiseResolution     listener installs localResolution on      *)
 (*                              op:resolve; canonical naive 1-promise      *)
 (*                              chain that violates because HeadPeer's     *)
 (*                              pipelined ref-1 sends and HeadPeer's       *)
 (*                              direct delivery race.                      *)
-(*   "NoPromiseResolution"     no op:resolve ever fires (gated by policy); *)
+(*   NoPromiseResolution       no op:resolve ever fires (gated by policy); *)
 (*                              every ref-1 send rides the wire through    *)
 (*                              the chain.                                 *)
-(*   "ShorteningUnsafe"        install localResolution immediately on      *)
+(*   ShorteningUnsafe          install localResolution immediately on      *)
 (*                              op:resolve; no flush; race on long chains. *)
 (*                              ("Shortening" here is OCapN-colloquial    *)
 (*                              for "the act of changing a ref's route";  *)
@@ -55,7 +56,7 @@
 (*                              no synchronisation against the old one,    *)
 (*                              regardless of which kind of path change    *)
 (*                              -- see notes/path-changes.md.)             *)
-(*   "EJavaFlush"              Faithful model of e-on-java's              *)
+(*   EJavaFlush                Faithful model of e-on-java's              *)
 (*                              DelayedRedirector mechanism.  On           *)
 (*                              op:resolve(r, _) at L:                     *)
 (*                                FAST PATH: vats[L].refs[r].fresh OR      *)
@@ -75,9 +76,9 @@
 (*                                  locality contract.                     *)
 (*                              The Tribble four-way scenario is a known   *)
 (*                              limitation inherited from the underlying   *)
-(*                              protocol; see "OpFlushProtocol" for an     *)
+(*                              protocol; see OpFlushProtocol for an       *)
 (*                              alternative design that addresses it.      *)
-(*   "OpFlushProtocol"         faithful implementation of Ridley's        *)
+(*   OpFlushProtocol           faithful implementation of Ridley's        *)
 (*                              op:flush proposal (ocapn#11; verbatim     *)
 (*                              draft in notes/flush-protocols.md §9).    *)
 (*                              Shortener-initiated: when a peer X has   *)
@@ -702,8 +703,8 @@ ProcessPending ==
 
 ----------------------------------------------------------------------------
 (* ResolverResolve: peer p (= host[r]) resolves its LocalPromise at refId r.
-   Behavior depends on the resolution's kind (Target vs Promise),
-   RoutingPolicy, and listener set. *)
+   Behavior depends on the resolution's kind (Target vs Promise), the
+   active policy's hook substitutions, and the listener set. *)
 
 ChainResolutionFor(r) ==
     IF r >= TerminalPos THEN ResNone
