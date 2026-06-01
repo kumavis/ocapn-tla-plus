@@ -69,17 +69,36 @@ Init ==
             [refs |->
                [r \in (1..MaxRefId) |->
                   CASE p = "vatA" /\ r = 1 ->
-                          PS!MkRemotePromise("vatB", 1,
+                          PS!MkRemotePromise(
+                              "vatB",
+                              1,
                               PS!ResRef("vatC", 2),
-                              {}, << >>, TRUE, FALSE)
+                              {},
+                              << >>,
+                              TRUE,
+                              FALSE,
+                              FALSE)
                     [] p = "vatA" /\ r = 2 ->
-                            PS!MkRemotePromise("vatC", 2, PS!ResNone,
-                                {}, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatC",
+                                2,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatA" /\ r = 3 ->
                             PS!MkLocalTarget
                     [] p = "vatB" /\ r = 1 ->
-                            PS!MkLocalPromise(<< >>, {"vatA"},
-                                PS!ResRef("vatC", 2), {}, TRUE, "idle", FALSE, {})
+                            PS!MkLocalPromise(
+                                << >>,
+                                {"vatA"},
+                                PS!ResRef("vatC", 2),
+                                {},
+                                TRUE,
+                                FALSE,
+                                {})
                     [] p = "vatB" /\ r = 2 ->
                             \* fresh = FALSE: vatB has already pipelined
                             \* a forward through ref 2 (pre-staged on
@@ -87,14 +106,34 @@ Init ==
                             \* chainFresh = FALSE on the handoff-give
                             \* receive and so chainEmbargo = TRUE under
                             \* EJavaFlush.
-                            PS!MkRemotePromise("vatC", 2, PS!ResNone,
-                                {}, << >>, TRUE, FALSE)
+                            PS!MkRemotePromise(
+                                "vatC",
+                                2,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                FALSE,
+                                FALSE)
                     [] p = "vatC" /\ r = 1 ->
-                            PS!MkRemotePromise("vatB", 1, PS!ResNone,
-                                {}, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatB",
+                                1,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatC" /\ r = 2 ->
-                            PS!MkLocalPromise(<< >>, {"vatB"},
-                                PS!ResRef("vatA", 3), {}, TRUE, "idle", FALSE, {})
+                            PS!MkLocalPromise(
+                                << >>,
+                                {"vatB"},
+                                PS!ResRef("vatA", 3),
+                                {},
+                                TRUE,
+                                FALSE,
+                                {})
                     [] p = "vatC" /\ r = 3 ->
                             PS!MkRemoteTarget("vatA", 3)
                     [] OTHER -> PS!EntryNone],

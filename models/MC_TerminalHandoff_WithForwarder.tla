@@ -59,13 +59,26 @@ Init ==
             [refs |->
                [r \in (1..MaxRefId) |->
                   CASE p = "vatA" /\ r = 1 ->
-                          PS!MkLocalPromise(<< >>, {"vatB"},
-                              PS!ResRef("vatA", 2), {}, FALSE, "idle", FALSE, {})
+                          PS!MkLocalPromise(
+                              << >>,
+                              {"vatB"},
+                              PS!ResRef("vatA", 2),
+                              {},
+                              FALSE,
+                              FALSE,
+                              {})
                     [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                     [] p = "vatB" /\ r = 1 ->
-                            PS!MkRemotePromise("vatA", 1, PS!ResNone,
-                                {}, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatA",
+                                1,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalTarget
                     [] OTHER -> PS!EntryNone],

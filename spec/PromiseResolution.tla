@@ -1729,9 +1729,15 @@ ReceiveNetwork ==
                                 -> /\ vats' =
                                         [vats EXCEPT
                                             ![self].refs[pw] =
-                                                MkRemotePromise(tgtHost, pw,
-                                                    ResNone, {},
-                                                    << >>, TRUE, TRUE),
+                                                MkRemotePromise(
+                                                    tgtHost,
+                                                    pw,
+                                                    ResNone,
+                                                    {},
+                                                    << >>,
+                                                    TRUE,
+                                                    TRUE,
+                                                    FALSE),
                                             ![self].refs[targetRefId].localResolution =
                                                 ResRef(self, pw),
                                             \* EJavaFlush slow path adds the
@@ -1762,9 +1768,15 @@ ReceiveNetwork ==
                                 -> /\ vats' =
                                         [vats EXCEPT
                                             ![self].refs[pw] =
-                                                MkRemotePromise(tgtHost, pw,
-                                                    ResNone, {},
-                                                    << >>, TRUE, TRUE)]
+                                                MkRemotePromise(
+                                                    tgtHost,
+                                                    pw,
+                                                    ResNone,
+                                                    {},
+                                                    << >>,
+                                                    TRUE,
+                                                    TRUE,
+                                                    FALSE)]
                                    /\ channels' =
                                         AppendToOutbox(ch0, self, tgtHost,
                                             OpWithdrawGift(gid, gifter, pw))
@@ -2013,8 +2025,14 @@ ReceiveNetwork ==
                             [vats EXCEPT
                                 ![self].gifts[from][gid] = entry,
                                 ![self].refs[pw] =
-                                    MkLocalPromise(<< >>, {rcp}, ResNone, {},
-                                                   FALSE, "idle", FALSE, {})]
+                                    MkLocalPromise(
+                                                   << >>,
+                                                   {rcp},
+                                                   ResNone,
+                                                   {},
+                                                   FALSE,
+                                                   FALSE,
+                                                   {})]
                        /\ channels' = ch0
                        /\ UNCHANGED << host, sent, delivered, nextRefId >>
                        /\ Mark([name |-> "ReceiveNetwork",

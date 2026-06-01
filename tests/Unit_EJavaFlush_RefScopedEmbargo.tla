@@ -103,8 +103,15 @@ Init ==
                           \* ref 1.  The unrelated deliver-only below went
                           \* through ref 2.  listenSent = TRUE keeps Listen
                           \* disabled.
-                          PS!MkRemotePromise("vatB", 1, PS!ResNone,
-                              {}, << >>, TRUE, TRUE)
+                          PS!MkRemotePromise(
+                              "vatB",
+                              1,
+                              PS!ResNone,
+                              {},
+                              << >>,
+                              TRUE,
+                              TRUE,
+                              FALSE)
                     [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                     [] p = "vatB" /\ r = 1 ->
@@ -112,8 +119,14 @@ Init ==
                             \* so ResolverResolve cannot re-fire.  The
                             \* op:resolve(desc:handoff-give) below is the
                             \* in-flight notification.
-                            PS!MkLocalPromise(<< >>, {"vatA"},
-                                PS!ResRef("vatC", 2), {}, TRUE, "idle", FALSE, {})
+                            PS!MkLocalPromise(
+                                << >>,
+                                {"vatA"},
+                                PS!ResRef("vatC", 2),
+                                {},
+                                TRUE,
+                                FALSE,
+                                {})
                     [] p = "vatB" /\ r = 2 ->
                             \* vatB's RemoteTarget pointing at the third
                             \* party vatC.  Required so vatB's resolution
