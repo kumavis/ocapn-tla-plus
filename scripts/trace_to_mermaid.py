@@ -349,6 +349,12 @@ class ActionNote:
     actors: tuple[str, ...]   # 1 or 2 actors for `Note over A` / `Note over A,B`
     body: str                 # human-readable body (no leading `[s..]`)
     short: str                # compact label for SVG (one or two words)
+    delivers_at: Optional[str] = None
+    """If non-None, this step appends to `delivered` at this peer.  The SVG
+    renders a delivery-sink marker on that peer's column at this step.
+    Covers both `deliver-terminal` (msg directly received at a LocalTarget)
+    and `forward-deliver` (msg routed via cascade to a LocalTarget on the
+    receiver; same end-state, no wire send out)."""
 
 
 def action_note_from_fields(fields: dict[str, str]) -> ActionNote | None:
@@ -418,7 +424,8 @@ def action_note_from_fields(fields: dict[str, str]) -> ActionNote | None:
                 (to,),
                 f"ReceiveNetwork deliver-terminal {fro}->{to} "
                 f"seq={g('seq')} refId={g('refId')} (LocalTarget sink)",
-                f"Recv seq={g('seq')} → delivered",
+                f"Deliver seq={g('seq')} r={g('refId')}",
+                delivers_at=to,
             )
         if kind == "enqueue-pending":
             return ActionNote(
@@ -427,7 +434,16 @@ def action_note_from_fields(fields: dict[str, str]) -> ActionNote | None:
                 f"refId={g('refId')} (LocalPromise.queue)",
                 f"Recv seq={g('seq')} → queue",
             )
-        if kind in ("forward-deliver", "forward-wire", "forward-queue",
+        if kind == "forward-deliver":
+            return ActionNote(
+                (to,),
+                f"ReceiveNetwork forward-deliver {fro}->{to} "
+                f"seq={g('seq')} refId={g('refId')} "
+                f"(cascade via r={g('refId')} → LocalTarget on {to})",
+                f"Deliver seq={g('seq')} (via r={g('refId')})",
+                delivers_at=to,
+            )
+        if kind in ("forward-wire", "forward-queue",
                     "forward-remote", "forward-remote-deliver",
                     "forward-remote-queue", "forward-remote-hold",
                     "forward-remote-target"):
@@ -842,6 +858,8 @@ def emit_svg(step_infos: list[StepInfo],
         f'<text x="{margin_left}" y="40" font-size="10" fill="#666">'
         'Solid = matched send/receive. Dashed = still in-flight at trace end.'
         ' Slope ≈ transit (more steps = steeper).'
+        ' Filled square on a peer column = terminal delivery (msg appended'
+        ' to `delivered` at that peer).'
         '</text>'
     )
 
@@ -880,6 +898,18 @@ def emit_svg(step_infos: list[StepInfo],
             f'<text x="{x}" y="{y}" font-size="9" fill="#555">'
             f'{xml_escape(si.note.short)}</text>'
         )
+        # Terminal delivery sink: a filled square on the receiver's column
+        # marks the step at which a seq lands in `delivered`.  Covers both
+        # deliver-terminal (direct LocalTarget receive) and forward-deliver
+        # (cascade via LocalPromise resolution to a LocalTarget on `to`).
+        if si.note.delivers_at and si.note.delivers_at in peer_x:
+            cx = peer_x[si.note.delivers_at]
+            cy = step_y[si.step]
+            color = SVG_COLORS["deliver"]
+            parts.append(
+                f'<rect x="{cx - 4}" y="{cy - 4}" width="8" height="8" '
+                f'fill="{color}" stroke="white" stroke-width="1"/>'
+            )
 
     # Diagonal arrows for each matched message
     for m in matched:
