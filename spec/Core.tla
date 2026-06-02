@@ -920,21 +920,19 @@ ResolverResolve ==
                notify ==
                    AppendResolveNotifications(channels, self, r, res,
                        listeners, LocalNextGiftId(self), nextRefId)
-               \* Resolver-initiated flush trigger: when a target-shaped
-               \* resolution would land on a remote peer, the resolver
-               \* fires op:flush-resolver to each listener and defers
-               \* op:resolve until acks return.  Per-session FIFO
-               \* sequences pre-resolve pipelined sends ahead of the
-               \* eventual resolve install at the listener, neutralising
-               \* the cascade-shortcut race demonstrated in
-               \* MC_OpFlushProtocol_3Chain_PromiseShorten (see
-               \* notes/flush-protocols.md §9.1).  Promise-shaped
-               \* resolutions are out of scope here -- they take the
-               \* shorten/handoff paths above when those policy hooks fire.
+               \* Resolver-initiated flush trigger: when a resolution
+               \* (either target-shaped or promise-shaped) would land
+               \* on a remote peer, the resolver fires op:flush to each
+               \* listener and defers op:resolve until acks return.
+               \* Per-session FIFO sequences pre-resolve pipelined sends
+               \* ahead of the eventual resolve install at the listener,
+               \* neutralising the cascade-shortcut race demonstrated in
+               \* MC_OpFlushProtocol_3Chain_PromiseShorten and (with the
+               \* promise-shaped extension) MC_OpFlushProtocol_..._3Party.
+               \* See notes/flush-protocols.md §9.1.
                fireResolverFlush ==
                    /\ fireOpResolveNow
                    /\ PolicyResolverInitiatedFlush
-                   /\ isTarget
                    /\ TargetHostPeer(self, res) # self
                \* Resolver-flush drain: any messages already buffered in
                \* r.queue (forwards that landed at vats[self].refs[r]
@@ -961,6 +959,26 @@ ResolverResolve ==
                    DrainResolveQueueRec(self, drainRoute,
                        entry.queue, channelsWithFlush, vatsForFlushBranch,
                        delivered)
+               \* Immediate-notify atomic queue drain.  Same FIFO reasoning
+               \* as the fireResolverFlush drain above, but for the
+               \* immediate-notify path where the resolution target is on
+               \* self (no flush needed for that listener).  Only enabled
+               \* under PolicyResolverInitiatedFlush so non-flush policies
+               \* (Naive / Shortening) retain their existing race surface.
+               immedDrainRoute ==
+                   IF fireOpResolveNow /\ PolicyResolverInitiatedFlush
+                   THEN Route(self, res.refId)
+                   ELSE [tag |-> "wire", peer |-> self, refId |-> r]
+               vatsForImmedBranch ==
+                   [vats EXCEPT
+                       ![self].refs[r].resolution = res,
+                       ![self].refs[r].notified = TRUE,
+                       ![self].refs[r].queue = << >>,
+                       ![self].nextGiftId = notify.gidNext]
+               immedDrained ==
+                   DrainResolveQueueRec(self, immedDrainRoute,
+                       entry.queue, notify.channels, vatsForImmedBranch,
+                       delivered)
            IN
               /\ res # ResNone
               \* Defensive: a 3-party listener requires handoff support
@@ -978,6 +996,15 @@ ResolverResolve ==
                           /\ channels' = drainedAfter.channels
                           /\ delivered' = drainedAfter.delivered
                           /\ UNCHANGED nextRefId
+                   [] fireOpResolveNow /\ PolicyResolverInitiatedFlush
+                       -> /\ ListenersNotifyable(self, res, listeners)
+                          /\ immedDrainRoute.tag \in {"deliver", "wire", "queue"}
+                          /\ vats' = immedDrained.vats
+                          /\ channels' = immedDrained.channels
+                          /\ delivered' = immedDrained.delivered
+                          /\ IF needsHandoff
+                             THEN nextRefId' = notify.pwNext
+                             ELSE UNCHANGED nextRefId
                    [] fireOpResolveNow
                        -> /\ ListenersNotifyable(self, res, listeners)
                           /\ vats' =
@@ -1344,23 +1371,24 @@ ReceiveNetwork ==
                                            CHOOSE cr \in ChainRefs
                                                \intersect DOMrefs(self) :
                                                   ChainBinderPred(cr)
+                                       \* Embargo set by an earlier OpFlush
+                                       \* receive may have collected pending
+                                       \* sends.  Drain them atomically with
+                                       \* the install via the post-install
+                                       \* cascade route, so the drained
+                                       \* messages occupy outbox / delivered
+                                       \* positions strictly before any later
+                                       \* op:deliver-only landings on this
+                                       \* peer.  Required for FIFO; see
+                                       \* notes/flush-protocols.md §9.1.
                                        vatsBase ==
                                            [vats EXCEPT
                                                ![self].refs[r].localResolution =
                                                    newLocalRes,
-                                               \* OpFlush op:resolve install:
-                                               \* remove the matching source
-                                               \* (= `from`, the resolver who
-                                               \* sent the op:flush) from the
-                                               \* refid-scoped embargo set.
-                                               \* For EJavaFlush this branch
-                                               \* fires on the fast path or
-                                               \* withdraw-promise paths;
-                                               \* embargo is already {} so the
-                                               \* set-difference is a no-op.
                                                ![self].refs[r].embargo =
-                                                   entry.embargo \ {from}]
-                                   IN /\ vats' =
+                                                   entry.embargo \ {from},
+                                               ![self].refs[r].pending = << >>]
+                                       vatsWithChainBinder ==
                                           IF /\ PolicyClearsChainBinderOnInstall
                                              /\ chainBinderExists
                                           THEN [vatsBase EXCEPT
@@ -1369,7 +1397,15 @@ ReceiveNetwork ==
                                                         LocalRef(self, chainBinder).embargo
                                                           \ {LocalRef(self, chainBinder).resolverPeer}]
                                           ELSE vatsBase
-                                      /\ channels' = ch0
+                                       drainRoute ==
+                                           Route(self, newLocalRes.refId)
+                                       drainedAfter ==
+                                           DrainResolveQueueRec(self, drainRoute,
+                                               entry.pending, ch0,
+                                               vatsWithChainBinder, delivered)
+                                   IN /\ vats' = drainedAfter.vats
+                                      /\ channels' = drainedAfter.channels
+                                      /\ delivered' = drainedAfter.delivered
                             [] embargoInstead
                                 -> /\ vats' =
                                        [vats EXCEPT
@@ -1385,8 +1421,9 @@ ReceiveNetwork ==
                                    /\ channels' =
                                         AppendToOutbox(ch0, self,
                                             entry.resolverPeer, probeMsg)
+                                   /\ UNCHANGED delivered
                             [] OTHER -> FALSE)
-                       /\ UNCHANGED << host, sent, delivered >>
+                       /\ UNCHANGED << host, sent >>
                        /\ HandoffVarsUnchanged
                        /\ Mark([name |-> "ReceiveNetwork",
                                 kind |-> "resolve",

@@ -58,11 +58,11 @@ PolicyEnforcesChainBinderEmbargo == FALSE
 PolicyClearsChainBinderOnInstall == TRUE
 PolicyHasListeners == TRUE
 PolicyRouteHoldsOnEmbargo == TRUE
-PolicyEmitsPromiseShortenNotify == FALSE
-PolicyEmitsPromiseShorten3PartyNotify == FALSE
+PolicyEmitsPromiseShortenNotify == TRUE
+PolicyEmitsPromiseShorten3PartyNotify == TRUE
 PolicyEmitsOpResolveOnTarget == TRUE
 PolicyRequiresWitnessForShorten3Party == FALSE
-PolicyShortens3PartyAnywhere == FALSE
+PolicyShortens3PartyAnywhere == TRUE
 PolicyChainEmbargoOnHandoffGive == FALSE
 PolicyResolverInitiatedFlush == TRUE
 
