@@ -49,8 +49,10 @@ jobs:
           mkdir -p "$HOME/tla"
           curl -fsSL -o "$HOME/tla/tla2tools.jar" \
             "https://github.com/tlaplus/tlaplus/releases/download/${TLA_TOOLS_VERSION}/tla2tools.jar"
-          java -cp "$HOME/tla/tla2tools.jar" tlc2.TLC -h >/dev/null 2>&1 \
-            || (echo "tla2tools.jar failed to load" >&2; exit 1)
+          # verify the jar is intact and contains TLC (TLC itself exits
+          # non-zero on -h/no-args, so check the class is present instead)
+          jar tf "$HOME/tla/tla2tools.jar" | grep -q '^tlc2/TLC\.class$' \
+            || (echo "tla2tools.jar missing tlc2.TLC" >&2; exit 1)
 
       - name: Run model-check suite
         run: bash scripts/run-tests.sh
