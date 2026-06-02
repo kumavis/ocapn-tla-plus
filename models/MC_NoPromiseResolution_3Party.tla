@@ -2,6 +2,12 @@
 (***************************************************************************)
 (* ChainLength = 3 (two promises + terminal), NoPromiseResolution policy. *)
 (* host existentially chosen at Init.  Expected: holds.                   *)
+(*                                                                         *)
+(* NumMessages = 3 (raised from 2) so this single no-path-change baseline *)
+(* also covers the deeper-pipeline FIFO surface the former 2-party        *)
+(* baseline (MC_NoPromiseResolution_2Party, nm=3) exercised.  Since this  *)
+(* policy emits no op:resolve, FIFO holds trivially regardless; the 3-hop *)
+(* chain at nm=3 subsumes the 2-hop chain at nm=3.                         *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
@@ -10,7 +16,7 @@ Peers == {"vatA", "vatB", "vatC"}
 HeadPeer == "vatA"
 ChainLength == 3
 MaxRefId == ChainLength
-NumMessages == 2
+NumMessages == 3
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == FALSE

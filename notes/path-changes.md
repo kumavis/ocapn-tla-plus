@@ -31,7 +31,7 @@ A `LocalPromise` resolves to a `Target` (`LocalTarget` or
   to the new target; future sends route directly through the target
   instead of being pipelined through the resolver.
 - **Modelled by:** every `MC_*` flush-protocol test
-  (`NaivePromiseResolution`, `ShorteningUnsafe`, `EJavaFlush`,
+  (`NaivePromiseResolution`, `EJavaFlush`,
   `OpFlushProtocol`). The chain `H -> p_1 -> ... -> p_{N-1} -> T@host[N]`
   emits exactly one `op:resolve` of this form: from `host[N-1]` (which
   is adjacent to the terminal) carrying `desc:import-target` or
@@ -61,7 +61,7 @@ Modelled by `Unit_LocalShorten_Cascade` (chain
 resolves to `p_2`, both on vatA, then `p_2` resolves to the terminal —
 sends pipelined into `p_1.queue` cascade into `p_2.queue` and out the
 wire). The intermediate linear-chain MCs (the `MC_*_NParty` models,
-e.g. `MC_EJavaFlush_4Party` / `MC_EJavaFlush_5Party`)
+e.g. `MC_EJavaFlush_4Party`)
 exercise the same mechanism as a side effect: each non-terminal
 `ResolverResolve` records a `resolution = ResRef(host[r+1], r+1)`
 on the LocalPromise without firing any wire message.
@@ -129,16 +129,14 @@ state-changing path-change events.
 | Policy | Path-change handling | Path-change hazard model | FIFO outcome |
 |---|---|---|---|
 | `NoPromiseResolution` | No `op:resolve` is ever emitted; listeners stay on their `RemotePromise`s forever. | No path change ⇒ no hazard. | Holds. |
-| `NaivePromiseResolution` | Listener installs `localResolution` immediately on `op:resolve` receipt. | Path change with zero synchronisation — in-flight pipelined sends on the old path race against new sends on the new path. | Violates `EndToEndRefFIFO` on a 2-chain (canonical counterexample). |
-| `ShorteningUnsafe` | Same as Naive (the name is OCapN-colloquial for "installs the new path without a flush", not literally about §1.2 promise shortening). | Same hazard, demonstrated on longer chains. | Violates `EndToEndRefFIFO` on a 3-chain (`MC_ShorteningUnsafe_4Party`). |
+| `NaivePromiseResolution` | Listener installs `localResolution` immediately on `op:resolve` receipt. | Path change with zero synchronisation — in-flight pipelined sends on the old path race against new sends on the new path. | Violates `EndToEndRefFIFO` on a 2-chain (`MC_NaivePromiseResolution_2Party`, canonical counterexample) and on a 4-party linear chain (`MC_NaivePromiseResolution_4Party`). |
 | `EJavaFlush` | Faithful e-on-java `DelayedRedirector` model: subscriber-initiated end-to-end probe + ack along the old path before committing to the new one. New sends buffer locally until the ack returns. | Probe rides the same FIFO channels as in-flight sends, so the ack is a protocol-level guarantee that everything pre-flush has been processed at the terminal. | Holds for linear chains; **does not** hold for Tribble four-way (§3.1). |
 | `OpFlushProtocol` | Resolver-initiated: `op:flush` to listeners (each listener acks via FIFO of its own outbox), then resolver-initiated probe + ack to the terminal target, only then `op:resolve` to listeners. Locality-clean: every state transition is driven by an explicit protocol message; no peer reads another peer's channel state. | Same end-to-end primitive (probe + ack) as EJavaFlush, layered under a listener-flush handshake. | Holds for linear chains (modelled three-party form of the Ridley proposal); the four-party form is future work (§3.1). |
 
-The `Shortening` in `ShorteningUnsafe` is a historical OCapN-colloquial
-usage where "shortening" denotes the umbrella act of changing a ref's
-route — what this note calls a **path change**. The policy name is
-kept for continuity with the OCapN discussion threads; it is not
-specifically about §1.2 promise shortening.
+(Historical note: an earlier `ShorteningUnsafe` policy — OCapN-
+colloquial for "installs the new path without a flush" — was a
+byte-for-byte alias of `NaivePromiseResolution` and has been merged
+into it. Its sole MC survives as `MC_NaivePromiseResolution_4Party`.)
 
 ## 3. Tracked future work
 
@@ -166,7 +164,7 @@ phases; Phases A, B, C (2- and 3-party flush), and Phase D
 **Phase A — two-party promise shortening (done; see §3.8).** Resolver
 emits `desc:import-promise` / `desc:export-promise` when listeners are
 two-party-reachable. Receive path was already wired. Gated to
-`NaivePromiseResolution` and `ShorteningUnsafe`.
+`NaivePromiseResolution`.
 [`MC_NaivePromiseResolution_2Party_PromiseShorten`](../models/MC_NaivePromiseResolution_2Party_PromiseShorten.tla)
 and [`Unit_PromiseShorten_TwoParty`](../tests/Unit_PromiseShorten_TwoParty.tla)
 exercise it.
@@ -182,8 +180,8 @@ target host / target local refId from `srcEntry`'s resolver fields
 when promise-shaped (subject to a `srcRef # existingRefId` guard
 that prevents a degenerate self-cycle under v0 globally-shared chain
 refIds). `ResolverResolve` fires the 3-party handoff path
-(`firePromiseShorten3Party`) under `NaivePromiseResolution` and
-`ShorteningUnsafe`. Witnessed by `Unit_PromiseShorten_ThreeParty`
+(`firePromiseShorten3Party`) under `NaivePromiseResolution`.
+Witnessed by `Unit_PromiseShorten_ThreeParty`
 and exercised by `MC_NaivePromiseResolution_3Party` (Naive surfaces
 the new race with `EndToEndRefFIFO_MC` violation; the chain MC is
 the dual of `MC_NaivePromiseResolution_2Party_PromiseShorten` for
@@ -196,7 +194,7 @@ three-party chains).
 **EJavaFlush** 3-party emission only; **OpFlushProtocol** uses `OpFlushCoversPromise` /
 `OpFlushResolverCoversPromise` (no `fresh` gate). Head-hop (`r = 1`)
 and `CoTerminalPromiseHost` limit resolver-initiated 3PHO on long
-chains (`MC_EJavaFlush_5Party` ~2554 states). Witnessed by `MC_EJavaFlush_2Party_PromiseShorten`,
+chains. Witnessed by `MC_EJavaFlush_2Party_PromiseShorten`,
 `MC_OpFlushProtocol_2Party_PromiseShorten`,
 `MC_EJavaFlush_3Party_PromiseShorten`, and
 `MC_OpFlushProtocol_3Party_PromiseShorten` (the latter pair
@@ -247,14 +245,14 @@ dynamic MC with `EnableHandoff = TRUE` should add both invariants to its
 `.cfg`. Per-state cost is O(|Peers|² × FIFO depth) — a few percent at
 most — and state counts are unchanged.
 
-Affected configs: `MC_EJavaFlush_4Party.cfg`, `MC_EJavaFlush_5Party.cfg`,
-`MC_OpFlushProtocol_4Party.cfg`, `MC_ShorteningUnsafe_4Party.cfg`,
+Affected configs: `MC_EJavaFlush_4Party.cfg`,
+`MC_OpFlushProtocol_4Party.cfg`, `MC_NaivePromiseResolution_4Party.cfg`,
 `MC_TerminalHandoff_Baseline.cfg`, `MC_TerminalHandoff_WithForwarder.cfg`,
 `MC_ConcurrentHandoffs.cfg`, and the four `Unit_Handoff_*.cfg` units.
 
 ### 3.6 EJavaFlush debug invariant `NoSlowPathCompletion_MC` no longer scopes the slow path
 
-`MC_EJavaFlush_4Party.tla` and `MC_EJavaFlush_5Party.tla` define a debug
+`MC_EJavaFlush_4Party.tla` defines a debug
 invariant intended to force TLC's BFS to render the shortest trace that
 exercises the EJavaFlush slow path (`OpEFlushProbe -> OpEFlushProbeAck
 -> ProcessHold` drain). The predicate matches a `RemotePromise` with
@@ -271,8 +269,8 @@ without ever sending a probe. The debug log then has zero
 debug runs).
 
 Fix: scope the existential to chain refs only — replace
-`\E r \in 1..MaxRefId` with `\E r \in 1..ChainLength` in both EJavaFlush
-model files. (`MC_OpFlushProtocol_4Party.tla`'s predicate is not
+`\E r \in 1..MaxRefId` with `\E r \in 1..ChainLength` in the EJavaFlush
+model file. (`MC_OpFlushProtocol_4Party.tla`'s predicate is not
 affected: it requires `flushPhase = "acked"`, which only the
 resolver-side slow-path actions set, so handoff withdraw-promises
 cannot satisfy it.)
@@ -340,7 +338,7 @@ Spec delta in [`spec/Core.tla`](../spec/Core.tla):
   listeners)` (negates `NeedsHandoffIntro` over the listener set).
 - New disjunct `firePromiseShorten` inside `ResolverResolve`'s
   `fireOpResolveNow` LET-binding, gated in Phase A to
-  `NaivePromiseResolution` and `ShorteningUnsafe` (Phase C later
+  `NaivePromiseResolution` (Phase C later
   added `EJavaFlush`; `OpFlushProtocol` runs its full flush
   handshake around the promise emission via `fireOpFlush` —
   see §3.10). In Phase A, `fireOpFlush` and `needsHandoff` stayed
@@ -373,7 +371,7 @@ Why gated to Naive + Shortening only:
   violations on flush-protocol MCs that currently pass — masking
   real bugs.
 - The existing flush-protocol chain MCs (`MC_EJavaFlush_4Party`,
-  `MC_EJavaFlush_5Party`, `MC_OpFlushProtocol_4Party`) all use 3+
+  `MC_OpFlushProtocol_4Party`) all use 3+
   distinct peers, so even after Phase B introduces three-party
   promise shortening, they need Phase C before they exercise
   promise-shaped chains end-to-end.
@@ -409,7 +407,7 @@ Spec delta in [`spec/Core.tla`](../spec/Core.tla):
   Phase A) from `firePromiseShorten3Party` (3-party, Phase B).
   `needsHandoff` fires when `isTarget` OR
   `firePromiseShorten3Party`. The 3-party gate is restricted to
-  `NaivePromiseResolution` and `ShorteningUnsafe` (see §3.10 for
+  `NaivePromiseResolution` (see §3.10 for
   why `EJavaFlush`/`OpFlushProtocol` are deferred).
 
 Tests added:
@@ -486,7 +484,8 @@ Why naive 3-party widening exploded state (historical) and how it
 was fixed:
 
 - Naively widening `firePromiseShorten3Party` to flush policies at
-  every middle hop blew up `MC_EJavaFlush_5Party` (>1.3M states).
+  every middle hop blew up the (since-removed) 5-party EJavaFlush
+  linear chain (>1.3M states).
 - **Fix:** `ListenersWitnessPipelined` (`pipelinedListeners` on the
   resolver's `LocalPromise`, not a cross-peer `fresh` read) + head-hop
   (`r = 1`) + `CoTerminalPromiseHost` for **EJavaFlush** 3-party only
@@ -528,11 +527,11 @@ was fixed:
 
 `firePromiseShorten3Party` in both `ResolverResolve` and
 `RepropagatePromiseShorten` previously gated all three of
-`NaivePromiseResolution`, `ShorteningUnsafe`, and `EJavaFlush` on
+`NaivePromiseResolution`, and `EJavaFlush` on
 `ListenersWitnessPipelined`. The comment at the predicate
 ("EJavaFlush 3-party only") was correct; the code was over-restricting.
 
-Under `NaivePromiseResolution` and `ShorteningUnsafe` the resolver has
+Under `NaivePromiseResolution` the resolver has
 no synchronization with listeners by design — the race surface is the
 whole point. Requiring a pipelined-listener witness suppressed real
 violations and made the policies appear safer than they are. The gate

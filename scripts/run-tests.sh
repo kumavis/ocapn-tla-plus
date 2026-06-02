@@ -9,7 +9,7 @@
 #
 # Debug mode (renders a mermaid trace from the .trace.md file):
 #   ./scripts/run-tests.sh --debug MC_NaivePromiseResolution_2Party
-#   ./scripts/run-tests.sh --debug MC_EJavaFlush_5Party
+#   ./scripts/run-tests.sh --debug MC_EJavaFlush_4Party
 #   ./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Party
 # runs models/<name>.tla against models/<name>_Debug.cfg (which sets
 # DebugTrace = TRUE and SPECIFICATION = SpecDebug), writes
@@ -79,16 +79,14 @@ fi
 
 # Tests: scenario MCs in models/ (policy-level race scenarios)
 SCENARIO_TESTS=(
-  "MC_NoPromiseResolution_2Party|pass"
   "MC_NoPromiseResolution_3Party|pass"
   "MC_NaivePromiseResolution_2Party|violation"
   "MC_NaivePromiseResolution_2Party_PromiseShorten|violation"
   "MC_NaivePromiseResolution_3Party|violation"
-  "MC_ShorteningUnsafe_4Party|violation"
+  "MC_NaivePromiseResolution_4Party|violation"
   "MC_EJavaFlush_4Party|pass"
   "MC_EJavaFlush_2Party_PromiseShorten|pass"
   "MC_EJavaFlush_3Party_PromiseShorten|violation"
-  "MC_EJavaFlush_5Party|pass"
   "MC_OpFlushProtocol_4Party|violation"
   "MC_OpFlushProtocol_2Party_PromiseShorten|pass"
   "MC_OpFlushProtocol_3Party_PromiseShorten|pass"

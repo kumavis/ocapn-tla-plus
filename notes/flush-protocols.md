@@ -32,13 +32,13 @@ for definitions and for the implementability contract.
   relative) and shorten their own dispatch through the new promise's
   host by writing the result into their `RemotePromise.localResolution`
   slot. Modelled in **Phase A** for the two-party case across
-  `NaivePromiseResolution` / `ShorteningUnsafe` / `EJavaFlush`, and
+  `NaivePromiseResolution` / `EJavaFlush`, and
   in **Phase C** for the two-party case under `OpFlushProtocol`
   (full `op:flush` -> `op:flush-ack` -> probe -> `op:resolve`
   handshake on promise-shaped resolutions when every listener is
   two-party). Three-party promise introductions use
   `desc:handoff-give` carrying a Promise cap (**Phase B**, gated to
-  `NaivePromiseResolution` / `ShorteningUnsafe`; the 3-party flush
+  `NaivePromiseResolution`; the 3-party flush
   extension is deferred — see `path-changes.md` §3.10). The
   multi-hop "re-propagate to upstream listeners" action required for
   the Tribble four-way is **Phase D**. See
@@ -50,12 +50,12 @@ for definitions and for the implementability contract.
   resolutions fire under every policy (`NoPromiseResolution` excluded
   by construction since its `ResolverResolve` is silent on
   emission); (ii) promise-shaped resolutions additionally fire under
-  `NaivePromiseResolution` / `ShorteningUnsafe` / `EJavaFlush`
+  `NaivePromiseResolution` / `EJavaFlush`
   (Phase A + Phase C 2-party emission) and `OpFlushProtocol` (Phase
   C 2-party with the full flush handshake) when every listener is
   two-party; (iii) for three-party promise-shaped resolutions, the
   resolver emits `desc:handoff-give` (Phase B 3PHO, gated to
-  `NaivePromiseResolution` / `ShorteningUnsafe`). When emission is
+  `NaivePromiseResolution`). When emission is
   silent (`NoPromiseResolution`, or 3-party promise resolution
   under the flush policies — deferred per §3.10), listeners stay
   on their `RemotePromise` route and the resolver keeps forwarding
@@ -190,8 +190,8 @@ When a `LocalPromise pa` at `H` becomes resolved to `R'`:
 | `LocalTarget`          | Yes — `op:resolve(targetRefId, desc:import-target(R'_local))` per listener when the target is on the resolver; `desc:export-target` when the listener hosts the target | No — listener already has session with `H` when two-party |
 | `RemoteTarget`         | Yes — `op:resolve(targetRefId, desc:handoff-give(...))` per listener when the target host is a third peer; `desc:export-target` when the listener is the target host | **Yes** — when the listener has no session with `R'.targetPeer` |
 | `LocalPromise`         | **No** — silent; listeners stay on their `RemotePromise` to `H`; `H` drains `pa.queue` into `R'.queue` (intra-vat cascade) | n/a |
-| `RemotePromise` (2-party listeners) | Yes — `op:resolve(targetRefId, desc:import-promise | desc:export-promise)` (Phase A + Phase C 2-party). Listener writes the result into its `RemotePromise.localResolution` and short-circuits future sends through the new promise's host. Gated to `NaivePromiseResolution` / `ShorteningUnsafe` / `EJavaFlush` (raw emission) and `OpFlushProtocol` (full flush handshake). | No |
-| `RemotePromise` (3-party listeners) | Yes — `op:resolve(targetRefId, desc:handoff-give(_, R'.resolverPeer, _, _))` carrying a Promise cap (Phase B). Gated to `NaivePromiseResolution` / `ShorteningUnsafe`; 3-party flush extension deferred — see `path-changes.md` §3.10. When silent, `H` drains `pa.queue` over the wire to `R'.resolverPeer` (legacy behaviour). | **Yes** |
+| `RemotePromise` (2-party listeners) | Yes — `op:resolve(targetRefId, desc:import-promise | desc:export-promise)` (Phase A + Phase C 2-party). Listener writes the result into its `RemotePromise.localResolution` and short-circuits future sends through the new promise's host. Gated to `NaivePromiseResolution` / `EJavaFlush` (raw emission) and `OpFlushProtocol` (full flush handshake). | No |
+| `RemotePromise` (3-party listeners) | Yes — `op:resolve(targetRefId, desc:handoff-give(_, R'.resolverPeer, _, _))` carrying a Promise cap (Phase B). Gated to `NaivePromiseResolution`; 3-party flush extension deferred — see `path-changes.md` §3.10. When silent, `H` drains `pa.queue` over the wire to `R'.resolverPeer` (legacy behaviour). | **Yes** |
 
 Listeners that receive `op:resolve` do **not** further propagate. They
 never `op:listen` on the new ref and never send `op:resolve` to their

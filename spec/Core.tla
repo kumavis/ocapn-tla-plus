@@ -48,14 +48,9 @@
 (*   NoPromiseResolution       no op:resolve ever fires (gated by policy); *)
 (*                              every ref-1 send rides the wire through    *)
 (*                              the chain.                                 *)
-(*   ShorteningUnsafe          install localResolution immediately on      *)
-(*                              op:resolve; no flush; race on long chains. *)
-(*                              ("Shortening" here is OCapN-colloquial    *)
-(*                              for "the act of changing a ref's route";  *)
-(*                              this policy commits to the new path with   *)
-(*                              no synchronisation against the old one,    *)
-(*                              regardless of which kind of path change    *)
-(*                              -- see notes/path-changes.md.)             *)
+(*   (A former `ShorteningUnsafe` policy -- a byte-for-byte alias of      *)
+(*    NaivePromiseResolution -- was merged into Naive; its long-chain     *)
+(*    witness survives as MC_NaivePromiseResolution_4Party.)              *)
 (*   EJavaFlush                Faithful model of e-on-java's              *)
 (*                              DelayedRedirector mechanism.  On           *)
 (*                              op:resolve(r, _) at L:                     *)
@@ -862,16 +857,15 @@ ResolverResolve ==
                \* desc:export-promise (no handoff-give needed), the
                \* resolver also fires op:resolve so listeners can
                \* shorten their dispatch through the new promise's
-               \* host.  Gated to NaivePromiseResolution and
-               \* ShorteningUnsafe because the new race surface
-               \* (in-flight forwards on the old path racing direct
-               \* sends on the new path) is exactly what those
-               \* policies are designed to surface; EJavaFlush and
+               \* host.  Gated to NaivePromiseResolution because the
+               \* new race surface (in-flight forwards on the old path
+               \* racing direct sends on the new path) is exactly what
+               \* that policy is designed to surface; EJavaFlush and
                \* OpFlushProtocol extend to promise-shaped chains
                \* (Phase C).  Three-party promise caps use
                \* desc:handoff-give (Phase B).
-               \* Phase A (2-party): NaivePromiseResolution +
-               \* ShorteningUnsafe.  Phase C extends to EJavaFlush; the
+               \* Phase A (2-party): NaivePromiseResolution.
+               \* Phase C extends to EJavaFlush; the
                \* listener-side EJavaFlush slow path on the existing
                \* op:resolve / TargetWireDescs receive branch already
                \* handles the new race (embargo + e-flush-probe through
