@@ -702,52 +702,81 @@ The drain helper is `Core!DrainResolveQueueRec`: it folds over
 `LocalRef(self, _)`; all writes scoped to `vats[self].refs[_]` and
 `channels[self][_]`. See `spec/Core.tla` for the implementation.
 
-#### FIFO outcome with queue drain
+#### Broader trigger extended to promise-shaped resolutions
 
-- `MC_OpFlushProtocol_3Chain_PromiseShorten` **passes** under the
-  drain (157 distinct / 358 generated). This is the 2-party
-  resolve-to-remote-target case the §4.7 trace targeted.
-- `MC_OpFlushProtocol_SameVatListener` continues to pass (no
-  remote-target resolution, drain is a no-op for this MC).
-- `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party` still violates.
-  The 3-party variant introduces handoff-give cascade alongside the
-  target resolution and reaches a separate race surface not
-  addressed by the queue drain alone.
-- `MC_OpFlushProtocol_4Chain` did not terminate under spot-check
-  observation (state space remains large with the new design;
-  unmeasured).
-- `MC_OpFlushProtocol_TribbleFourWay` similarly unmeasured.
+The atomic queue drain alone fixes the 2-party 2-chain race, but
+3-party cases involve a second hazard: the chain of resolutions
+spans multiple links, and the resolver-side flush at one link
+doesn't close the race at the next. Specifically, in the 3-party
+MC `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party`:
 
-All non-OpFlushProtocol MCs (Naive, Shortening, EJavaFlush,
-NoPromise) keep their previous outcomes and identical state counts.
-No regressions.
+- vatB's resolution of `r=1` (Promise → `ref(vatC, 2)`) is *also* a
+  resolve-to-remote-value, but without
+  `PolicyEmitsPromiseShortenNotify` set, no `op:flush` fires for it
+  at all.
+- vatC's resolution of `r=2` (Target → `ref(vatC, 3)`, with the
+  target on self) takes the immediate-notify path — but
+  `r=2.queue` (vatC's LocalPromise queue) accumulated `seq=1` via
+  the chain cascade, and that queue drains via `ProcessPending`
+  later, racing with `seq=2`'s wire delivery to vatC's LocalTarget.
 
-#### What's still missing
+The full fix:
 
-The remaining 3-party and 4-chain failures share a structural
-property: they involve more than one chain link where each link's
-resolution opens a new shortcut at downstream peers. The atomic
-drain catches the 2-party case where there is exactly one
-LocalPromise whose queue could race; with multiple links each peer
-may have a different queueing point, and a flush at one link
-doesn't close the race at another.
+- **Drop `isTarget` from `fireResolverFlush`.** The broader trigger
+  fires for any resolve-to-remote-value, target-shaped or
+  promise-shaped.
+- **Flip the promise-shorten policy hooks ON for OpFlushProtocol.**
+  `PolicyEmitsPromiseShortenNotify`,
+  `PolicyEmitsPromiseShorten3PartyNotify`, and
+  `PolicyShortens3PartyAnywhere` all become TRUE. `ResolverResolve`
+  now emits `op:resolve` (preceded by the broader-trigger
+  `op:flush`) for promise-shaped resolutions whose target host is a
+  different peer, including the 3-party variant.
+- **Extend the atomic queue drain to the immediate-notify CASE
+  branch** (gated on `PolicyResolverInitiatedFlush`). The same
+  `DrainResolveQueueRec` helper folds over `r.queue` and routes
+  each message via the post-resolve cascade, threading
+  `channels` / `vats` / `delivered` through the fold. Non-flush
+  policies (Naive, Shortening) keep their existing race surface.
+- **Add an atomic pending drain to the op:resolve install branch.**
+  When the install clears the listener-side embargo, any messages
+  buffered in `r.pending` (held there by the listener-side
+  embargo on flush receive) get routed via the post-install
+  cascade as part of the same action — closing the race between
+  `ProcessHold` and subsequent `op:deliver-only` wire arrivals at
+  the same peer.
 
-**Broader-trigger extended to promise-shaped resolutions.** In the
-3-party trace, vatB resolves `r=1` to a promise on vatA — also a
-resolve-to-remote-value — but OpFlushProtocol currently has
-`PolicyEmitsPromiseShortenNotify = FALSE`, so no `op:flush` fires
-for promise resolutions. If the broader trigger also fired on
-promise resolutions, vatA's `r=1` mirror would be embargoed
-(via the listener-embargo path in §9.1) and subsequent
-`PeerSend ... ref=1` calls at vatA would be held in `r=1.pending`
-rather than going directly on the wire. Combined with the
-resolver-side queue drain, this should fix the 3-party variant.
+#### FIFO outcome — full broader trigger
 
-These are real spec questions, not just implementation gaps. The
-broader trigger from §9.1 plus listener embargo plus atomic
-resolver-side queue drain is the necessary foundation; extending
-the broader trigger to promise-shaped resolutions is the next
-layer.
+- `MC_OpFlushProtocol_3Chain_PromiseShorten`: **PASS**
+  (333 distinct / 673 generated).
+- `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party`: **PASS**
+  (319 / 785). Previously a violation; the broader trigger plus
+  immediate-notify drain fixes the 3-party race.
+- `MC_OpFlushProtocol_SameVatListener`: unchanged (35 / 57).
+- All non-OpFlushProtocol MCs keep their previous outcomes and
+  identical state counts.
+- `MC_OpFlushProtocol_4Chain` and
+  `MC_OpFlushProtocol_TribbleFourWay`: results pending under the
+  longer-running suite — to be reported.
+
+The complete `OpFlushProtocol` design now consists of:
+
+1. **Broader trigger** (resolver-side). Fires when the resolver
+   resolves a `LocalPromise` to any value (target or promise) on a
+   different machine.
+2. **Listener-side embargo on `op:flush` receive.** Combined with
+   `PolicyRouteHoldsOnEmbargo = TRUE`, this holds future sends
+   routed through the embargoed `RemotePromise` mirror.
+3. **Atomic resolver-side queue drain** in `ResolverResolve` (both
+   the flush branch and the immediate-notify branch under
+   `PolicyResolverInitiatedFlush`).
+4. **Atomic listener-side pending drain** in the `op:resolve`
+   install branch.
+
+Each piece addresses a specific FIFO hazard; together they
+mechanically eliminate the path-changes-racing-in-flight traffic
+class of failures.
 
 ### 9.2 Implementation in this spec
 
