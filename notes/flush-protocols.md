@@ -756,9 +756,20 @@ The full fix:
 - `MC_OpFlushProtocol_SameVatListener`: unchanged (35 / 57).
 - All non-OpFlushProtocol MCs keep their previous outcomes and
   identical state counts.
-- `MC_OpFlushProtocol_4Chain` and
-  `MC_OpFlushProtocol_TribbleFourWay`: results pending under the
-  longer-running suite — to be reported.
+- `MC_OpFlushProtocol_TribbleFourWay`: still violates (920 / 2149).
+  The "Tribble four-way" trace exposes a cross-channel race that
+  per-session FIFO can't sequence: at the terminal peer, a
+  shortened-path delivery on channel `vatA→vatT` and a long-path
+  forward arriving on channel `vatB→vatT` are FIFO-ordered only
+  within each channel. When the long path takes more wire hops
+  than the short path, the short-path message can land at the
+  terminal first even though both originated from the head before
+  the shortening completed. EJavaFlush exhibits the same
+  limitation; closing it requires either a probe-like end-to-end
+  signal (the EJavaFlush approach in shorter chains, which doesn't
+  generalise either) or a fundamentally different design.
+- `MC_OpFlushProtocol_4Chain`: result still pending under
+  long-running model check.
 
 The complete `OpFlushProtocol` design now consists of:
 
