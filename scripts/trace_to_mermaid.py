@@ -313,6 +313,86 @@ def extract_delivered_seq_order(block: str) -> list[int]:
     return [int(x) for x in re.findall(r"seq\s*\|\->\s*(\d+)", inner)]
 
 
+def extract_host_map(block: str) -> list[str]:
+    """Parse the `/\\ host = <<"vatB", "vatA", "vatB">>` line into a list
+    indexed by refId 1..N.  Returns []  if no `host` field is present."""
+    m = re.search(r"/\\ host[ \t]*=[ \t]*<<([\s\S]*?)>>", block)
+    if not m:
+        return []
+    return re.findall(r'"([^"]+)"', m.group(1))
+
+
+def chain_path_summary(block: str) -> str:
+    """Build a one-line `r1@vatB → r2@vatA(LP→r3) → r3@vatB(LT)`-style
+    chain summary from the Init state.  Each refId shows host and entry
+    kind tag (LT=LocalTarget, LP=LocalPromise) and -- when LocalPromise
+    has an initial resolution -- the next hop."""
+    host = extract_host_map(block)
+    if not host:
+        return ""
+    # Pull each peer's refs slice; pluck kind + (if LocalPromise) resolution.
+    # The refs sequence is `<< [...], [...], ... >>`, but the entries can
+    # contain nested `<<>>` (pending / queue), so we walk the `<<...>>`
+    # with depth counting rather than non-greedy regex.
+    refs_by_peer: dict[str, list[dict[str, str]]] = {}
+    for pm in re.finditer(r'(\w+)\s*\|\->\s*\[\s*refs\s*\|\->\s*<<', block):
+        peer = pm.group(1)
+        j = pm.end()
+        ang = 1
+        n = len(block)
+        while j < n and ang > 0:
+            if block.startswith("<<", j):
+                ang += 1
+                j += 2
+            elif block.startswith(">>", j):
+                ang -= 1
+                if ang == 0:
+                    break
+                j += 2
+            else:
+                j += 1
+        refs_blob = block[pm.end():j]
+        entries: list[dict[str, str]] = []
+        depth = 0
+        start = -1
+        for i, c in enumerate(refs_blob):
+            if c == '[':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif c == ']':
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    body = refs_blob[start:i + 1]
+                    e: dict[str, str] = {}
+                    km = re.search(r'kind\s*\|\->\s*"([^"]+)"', body)
+                    if km:
+                        e['kind'] = km.group(1)
+                    rm = re.search(
+                        r'resolution\s*\|\->\s*\[kind\s*\|\->\s*"ref"\s*,'
+                        r'\s*peer\s*\|\->\s*"([^"]+)"\s*,\s*refId\s*\|\->\s*(\d+)\]',
+                        body)
+                    if rm:
+                        e['res_peer'] = rm.group(1)
+                        e['res_refId'] = rm.group(2)
+                    entries.append(e)
+                    start = -1
+        refs_by_peer[peer] = entries
+    short = {'LocalTarget': 'LT', 'LocalPromise': 'LP',
+             'RemoteTarget': 'RT', 'RemotePromise': 'RP'}
+    parts: list[str] = []
+    for idx, h in enumerate(host, start=1):
+        entries = refs_by_peer.get(h, [])
+        e = entries[idx - 1] if idx - 1 < len(entries) else {}
+        kind = e.get('kind', '?')
+        tag = short.get(kind, kind)
+        suffix = ''
+        if 'res_peer' in e and 'res_refId' in e:
+            suffix = f'→{e["res_peer"]}:r{e["res_refId"]}'
+        parts.append(f'r{idx}@{h}({tag}{suffix})')
+    return ' → '.join(parts)
+
+
 def collect_peers(matrix: dict[str, dict[str, list[str]]]) -> set[str]:
     ps: set[str] = set()
     for f, tm in matrix.items():
@@ -668,7 +748,10 @@ def ingest(log: str):
             ))
 
     delivered = extract_delivered_seq_order(parts[-1]) if parts else []
-    return step_infos, sorted(all_peers), matched, delivered
+    # Initial state (parts[0] is the preamble before "State 1:"; parts[1] is
+    # State 1 if present).  Parse the chain summary from State 1.
+    chain = chain_path_summary(parts[1]) if len(parts) > 1 else ""
+    return step_infos, sorted(all_peers), matched, delivered, chain
 
 
 # ---------------------------------------------------------------------------
@@ -679,7 +762,8 @@ def ingest(log: str):
 def emit_mermaid(step_infos: list[StepInfo],
                  peers: list[str],
                  matched: list[MatchedMessage],
-                 delivered: list[int]) -> str:
+                 delivered: list[int],
+                 chain: str = "") -> str:
     """Build the mermaid sequenceDiagram (string with leading/trailing ```)."""
     # Index recv_step per (send_step, msg_raw_summary, from, to) so each
     # enqueue arrow can show its later dequeue step.
@@ -695,6 +779,11 @@ def emit_mermaid(step_infos: list[StepInfo],
     if not peers:
         lines.append("    Note over TLC: no channels in log")
     elif len(peers) >= 2:
+        if chain:
+            lines.append(
+                f"    Note over {esc(peers[0])},{esc(peers[-1])}: "
+                f"Chain: {esc_label(chain)}"
+            )
         lines.append(
             f"    Note over {esc(peers[0])},{esc(peers[-1])}: "
             "TLC step `[sN]` is the BFS state index. "
@@ -798,7 +887,8 @@ def xml_escape(s: str) -> str:
 def emit_svg(step_infos: list[StepInfo],
              peers: list[str],
              matched: list[MatchedMessage],
-             delivered: list[int]) -> str:
+             delivered: list[int],
+             chain: str = "") -> str:
     if not peers or not step_infos:
         return ('<?xml version="1.0" encoding="UTF-8"?>\n'
                 '<svg xmlns="http://www.w3.org/2000/svg" width="200" '
@@ -808,10 +898,10 @@ def emit_svg(step_infos: list[StepInfo],
     n_peers = len(peers)
     n_steps = len(step_infos)
 
-    # Layout
+    # Layout: add an extra header row when we have a chain summary to draw.
     margin_left = 80
     margin_right = 40
-    margin_top = 80
+    margin_top = 80 + (16 if chain else 0)
     margin_bottom = 60
     col_width = 180
     row_height = 34
@@ -862,6 +952,15 @@ def emit_svg(step_infos: list[StepInfo],
         ' to `delivered` at that peer).'
         '</text>'
     )
+
+    # Chain path summary, if the initial state had a `host` map we could
+    # parse.  Sits just below the header text and above the peer columns.
+    if chain:
+        parts.append(
+            f'<text x="{margin_left}" y="56" font-size="10" fill="#555">'
+            f'Chain: {xml_escape(chain)}'
+            '</text>'
+        )
 
     # Peer columns + labels
     for p in peers:
@@ -1022,9 +1121,9 @@ def main():
     args = ap.parse_args()
 
     log = sys.stdin.read()
-    step_infos, peers, matched, delivered = ingest(log)
+    step_infos, peers, matched, delivered, chain = ingest(log)
 
-    md = emit_mermaid(step_infos, peers, matched, delivered)
+    md = emit_mermaid(step_infos, peers, matched, delivered, chain)
     print(md)
     if not step_infos and not peers:
         print("<!-- trace-to-mermaid: no channel or lastAction steps -->",
@@ -1033,7 +1132,7 @@ def main():
     if args.svg:
         try:
             with open(args.svg, "w", encoding="utf-8") as f:
-                f.write(emit_svg(step_infos, peers, matched, delivered))
+                f.write(emit_svg(step_infos, peers, matched, delivered, chain))
         except OSError as e:
             print(f"warning: could not write SVG to {args.svg}: {e}",
                   file=sys.stderr)
