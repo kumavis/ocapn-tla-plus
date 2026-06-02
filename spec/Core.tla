@@ -367,10 +367,8 @@ Messages ==
     { OpDeliverOnly(HeadPeer, 1, n, r) :
         n \in 1..NumMessages, r \in RefIds }
     \cup { OpResolve(r, v) : r \in RefIds, v \in DescValues }
-    \cup { OpFlush(td, ap, rm) :
-            td \in RefIds, ap \in RefIds, rm \in RefIds }
-    \cup { OpFlushResolver(t) : t \in RefIds }
-    \cup { OpFlushResolverAck(t) : t \in RefIds }
+    \cup { OpFlush(t) : t \in RefIds }
+    \cup { OpFlushAck(t) : t \in RefIds }
     \cup { OpListen(r) : r \in RefIds }
     \cup { OpEFlushProbe(o, r0, r) :
             o \in Peers, r0 \in RefIds, r \in RefIds }
@@ -937,7 +935,7 @@ ResolverResolve ==
                                   ![self].refs[r].flushPending = listeners]
                           /\ channels' =
                               AppendToManyOutboxes(channels, self, listeners,
-                                  OpFlushResolver(r))
+                                  OpFlush(r))
                           /\ UNCHANGED nextRefId
                    [] fireOpResolveNow
                        -> /\ ListenersNotifyable(self, res, listeners)
