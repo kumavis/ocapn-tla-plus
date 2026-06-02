@@ -108,23 +108,31 @@ and dispatch live in [`spec/Core.tla`](spec/Core.tla):
   buffered `pending`. Holds for linear chains; the Tribble four-way
   scenario is a known inherited limitation (see
   [`notes/path-changes.md`](notes/path-changes.md) §3.1).
-- **`"OpFlushProtocol"`** — faithful implementation of Ridley's
-  `op:flush` proposal (ocapn#11). **Shortener-initiated**: when a peer
-  X learns its `RemotePromise` resolves to a third party, X may fire
-  `InitiateFlush`, sending `op:flush(to-desc, answer-pos,
-  resolve-me-desc)` to the resolver-holder. The resolver-holder mints
-  a fresh `p'` / `r'`, fulfills the old `r` with `p'` (intra-vat
-  cascade buffers future sends locally at `p'`), and replies with
-  `op:resolve(resolve-me-desc, desc:import-promise(p'))`. After the
-  response, X performs a normal 3PHO targeting `r'` instead of `r`.
-  See `notes/flush-protocols.md` §9 for the verbatim Ridley draft,
-  §9.1 for the missing resolve-to-remote-value trigger, and §9.2 for
-  implementation notes. **Surprising result**: the protocol
-  as specified does NOT preserve `EndToEndRefFIFO` on the chain
-  topologies this spec exercises (see `notes/path-changes.md` §4.7
-  for the counterexample). Four of the five OpFlushProtocol MCs
-  violate FIFO under faithful Ridley; only the single-vat-listener
-  topology passes.
+- **`"OpFlushProtocol"`** — **resolver-initiated, broader-trigger**
+  variant of Ridley's `op:flush` (ocapn#11).  The narrow draft
+  triggers `op:flush` only on shortening third-party handoffs;
+  modelling that exactly leaves a class of FIFO races unaddressed
+  (see `notes/flush-protocols.md` §9.1 for the full discussion).
+  The modelled trigger fires whenever a peer X resolves a
+  `LocalPromise` to a value whose host is a different machine
+  (target-shaped OR promise-shaped).  Wire form is the simpler
+  one-field handshake: X emits `op:flush(targetRefId)` to each
+  listener whose dispatch path through the promise will change,
+  defers `op:resolve` until acks return; each listener
+  `op:flush(targetRefId)` receipt sets the listener's
+  `RemotePromise` mirror embargo so subsequent routes through the
+  ref hold in `pending` instead of forwarding.  The post-flush
+  `op:resolve` install lifts the embargo and atomically drains
+  `pending`; the resolver also atomically drains its own
+  `LocalPromise.queue` as part of `ResolverResolve`.  These four
+  pieces together (broader trigger, listener embargo, atomic queue
+  drain, atomic pending drain) make `EndToEndRefFIFO` hold for the
+  2-party and 3-party shortening MCs.  See
+  `notes/flush-protocols.md` §9.1 for the full design notes and
+  §9.2 for implementation notes.  Limitation: the Tribble four-way
+  scenario still violates FIFO because the racing messages live on
+  distinct (from,to) channels and per-session FIFO doesn't order
+  across them.
 
 ## Message ordering invariant
 
@@ -279,7 +287,6 @@ exits non-zero on any unexpected outcome (`pass` vs `violation`).
 
 ```bash
 ./scripts/run-tests.sh --debug MC_NaivePromiseResolution_2Party
-./scripts/run-tests.sh --debug MC_EJavaFlush_4Party
 ./scripts/run-tests.sh --debug MC_EJavaFlush_4Party
 ./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Party
 ```

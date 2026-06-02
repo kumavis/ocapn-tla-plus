@@ -218,11 +218,21 @@ def summarize_msg(msg: str) -> str:
             )
         return f'op:resolve(targetRefId={target})'
     if op == "op:flush":
+        # OpFlushProtocol's broader-trigger op:flush carries targetRefId
+        # only.  Earlier drafts used the 3-field Ridley shape (toDescRefId
+        # /answerPos/resolveMeRefId); keep it as a fallback so historical
+        # logs still render.
+        target = _grp(tri_pat, msg, "")
+        if target:
+            return f'op:flush(targetRefId={target})'
         td = _grp(tdr_pat, msg)
         ap = _grp(answer_pat, msg)
         rm = _grp(rmd_pat, msg)
         return f'op:flush(toDescRefId={td}, answerPos={ap}, resolveMeRefId={rm})'
     if op == "op:flush-ack":
+        target = _grp(tri_pat, msg, "")
+        if target:
+            return f'op:flush-ack(targetRefId={target})'
         rid = _grp(rid_pat, msg)
         return f'op:flush-ack(refId={rid})'
     if op == "op:listen":

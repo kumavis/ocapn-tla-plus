@@ -45,8 +45,11 @@ VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
      embargo is set on op:flush receipt instead).
    - Route hold check fires on non-empty embargo (the post-flush hold
      window at the listener).
-   - Promise-shorten 2-party + 3-party emission stays OFF; the resolver-
-     side flush handles the path-change race directly. *)
+   - Promise-shorten 2-party + 3-party emission is ON: under the
+     broader trigger, the resolver fires op:flush for any resolution
+     whose target host is a different peer, target-shaped or
+     promise-shaped.  The shorten emission rides the same op:resolve
+     wire op after the flush handshake completes. *)
 
 PolicyInstallNowOnResolve(isHandoffPwTarget, isHandoffPwPromiseCap, fastPath) ==
     TRUE
@@ -109,7 +112,7 @@ ReceiveOpFlush ==
                                 kind |-> "flush",
                                 from |-> from,
                                 to |-> self,
-                                targetRefId |-> r])
+                                refId |-> r])
 
 (* ReceiveOpFlushAck: resolver side.  Each ack removes one listener
    from flushPending.  When flushPending empties, the resolver fires
@@ -166,7 +169,7 @@ ReceiveOpFlushAck ==
                                 kind |-> "flush-ack",
                                 from |-> from,
                                 to |-> self,
-                                targetRefId |-> r,
+                                refId |-> r,
                                 wakeup |-> wakeup])
 
 ----------------------------------------------------------------------------

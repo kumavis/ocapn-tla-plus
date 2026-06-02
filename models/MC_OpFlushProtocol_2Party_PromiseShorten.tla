@@ -1,7 +1,9 @@
 --------------- MODULE MC_OpFlushProtocol_2Party_PromiseShorten ---------------
 (***************************************************************************)
-(* 2-party inter-vat promise-to-promise shortening under OpFlushProtocol   *)
-(* (faithful Ridley op:flush; ocapn#11; see notes/flush-protocols.md §9). *)
+(* 2-party inter-vat promise-to-promise shortening under OpFlushProtocol.  *)
+(* Wire form is the broader-trigger handshake                              *)
+(* (op:flush(targetRefId) / op:flush-ack(targetRefId)) with listener-side  *)
+(* embargo on the RemotePromise mirror; see notes/flush-protocols.md §9.1.*)
 (*                                                                         *)
 (* Topology: same as MC_EJavaFlush_2Party_PromiseShorten.                  *)
 (*   HeadPeer = vatA                                                       *)
@@ -9,11 +11,11 @@
 (*   host[2]  = vatA   (LocalPromise p_2; listener {vatB})                 *)
 (*   host[3]  = vatB   (LocalTarget T)                                     *)
 (*                                                                         *)
-(* Expected outcome: EndToEndRefFIFO_MC violated.  See                    *)
-(* notes/path-changes.md §4.7 for the trace and root cause -- the         *)
-(* shortest counterexample never fires InitiateFlush; the race surfaces  *)
-(* purely from OpFlushProtocol's immediate-install arm of                 *)
-(* fireOpResolveNow racing the chain drain.                                *)
+(* Expected outcome: EndToEndRefFIFO_MC PASSES.  Under the broader-trigger *)
+(* implementation, the resolver-side flush handshake plus the atomic       *)
+(* LocalPromise.queue drain inside ResolverResolve, plus the listener-side *)
+(* embargo and atomic pending drain inside the op:resolve install branch,  *)
+(* eliminate the cascade-shortcut race.                                    *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
