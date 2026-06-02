@@ -653,84 +653,101 @@ The old shortener-pull `InitiateFlush` action and the 3-field
 `op:flush(toDescRefId, answerPos, resolveMeRefId)` wire op were
 deleted; the broader resolver-side trigger subsumes them.
 
-#### FIFO outcome — still violates in 2-chain, state-space blew up in 4-chain
+- `LocalPromise.queue` (resolver-side) — atomically drained by
+  `ResolverResolve` when `fireResolverFlush` is TRUE. The drain is
+  a strict-sequencing primitive, not a buffering one: any message
+  buffered at `r.queue` while `r` was unresolved gets routed onto
+  the new path **as part of the same `ResolverResolve` action** that
+  emits `op:flush`, so the drained messages occupy outbox positions
+  *before* any subsequent `PeerSend` from the resolver on the same
+  channel.
 
-Running the suite with the new implementation:
+#### Why the queue drain is non-optional (FIFO-critical)
 
-- All non-OpFlushProtocol MCs pass with identical state counts (no
-  regressions on Naive / Shortening / EJavaFlush / NoPromise).
-- `MC_OpFlushProtocol_3Chain_PromiseShorten` still violates
-  `EndToEndRefFIFO`, but at a different point. The flush handshake
-  fires correctly and the listener-side embargo works — but the
-  race shifted to the resolver's own `LocalPromise.queue`. Trace:
-  - vatA sends `seq=1` on `r=1` (vatA's RemotePromise mirror) at
-    s2.
-  - vatB resolves `r=1` to `ref(vatA, 2)` at s3 (no `op:resolve`
-    emitted; this is a promise-shaped resolution and OpFlushProtocol
-    doesn't fire `PolicyEmitsPromiseShortenNotify`).
-  - vatB receives `seq=1` ref=1 at s4, forwards to vatA on `r=2`
-    via the wire (this happens *before* any flush could exist, since
-    vatA hasn't fired `ResolverResolve` for `r=2` yet).
-  - vatA receives `seq=1` ref=2 at s5, enqueues into `r=2.queue`
-    (LocalPromise unresolved).
-  - vatA fires `ResolverResolve r=2` at s6: this fires `op:flush`
-    to vatB and sets `r=2.resolution = ref(vatB, 3)`. The queue at
-    `r=2` is left untouched.
-  - vatA receives `op:flush-ack` at s8, emits `op:resolve`. vatA
-    pipelines `seq=2` at s9.
-  - vatB processes `op:resolve` (install + clear embargo) at s10,
-    then `seq=2` at s11 (cascade-shortcut → deliver locally).
-  - vatA's `ProcessPending` drains `r=2.queue` to vatB on `r=3` at
-    s12. vatB delivers `seq=1` at s13.
-  - Result: `[seq=2, seq=1]`.
+Without the atomic drain, the race is:
 
-  The forwarded `seq=1` ref=2 landed at vatA *before* vatA fired
-  the flush, and got queued at `r=2`. The queue then drains
-  asynchronously (`ProcessPending`), racing with the post-flush
-  pipelined `seq=2`. The listener-side embargo at vatB doesn't help
-  because the race is on the *resolver* side this time.
+1. Some downstream peer forwards an `op:deliver-only` to the
+   resolver on `r` while `r` is unresolved (Core's
+   `ReceiveNetwork` `enqueue-pending` branch lands it in
+   `r.queue`).
+2. The resolver later fires `ResolverResolve`. Under the broader
+   trigger this enqueues `op:flush` on `channels[self][listener]`
+   but does *not* touch `r.queue`.
+3. After the flush-ack returns, the resolver emits `op:resolve` to
+   the listener. Per-channel FIFO means `op:resolve` arrives at the
+   listener after any `op:flush` and after any earlier `PeerSend`,
+   but `r.queue` is still sitting at the resolver, waiting for
+   `ProcessPending` to fire.
+4. `ProcessPending` and `PeerSend` are independent actions; TLC
+   freely interleaves them. If a `PeerSend` fires before
+   `ProcessPending`, the new outbound message enters
+   `channels[self][listener]` ahead of the queue drain. At the
+   listener the new message arrives after `op:resolve` (so the
+   listener's cascade is fully resolved by then) and
+   cascade-shortcuts to the LocalTarget — while the older buffered
+   message, still draining, takes the longer cascade through the
+   listener's chain. FIFO at the LocalTarget is broken.
 
-- `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party` and
-  `MC_OpFlushProtocol_TribbleFourWay` still violate (same family
-  of race).
+The drain in `ResolverResolve` closes the race by binding the queue
+to be flushed onto the channel atomically with the flush emission.
+Calls **must** drain in the order they were buffered, and they must
+land in the outbox before the resolver's next outbound message;
+splitting the queue drain into a separate enabled action (the
+existing `ProcessPending` shape) is FIFO-unsafe whenever the
+resolver subsequently pipelines more sends.
 
-- `MC_OpFlushProtocol_4Chain` failed to terminate within 45 minutes
-  of model checking (state space exploded under the new design;
-  was at depth 15 with ~1200 distinct states and growing slowly).
-  Killed and unmeasured.
+The drain helper is `Core!DrainResolveQueueRec`: it folds over
+`r.queue` calling `Core!ApplyRoute` per message with a precomputed
+`Route(self, res.refId)`. Locality contract upheld: all reads via
+`LocalRef(self, _)`; all writes scoped to `vats[self].refs[_]` and
+`channels[self][_]`. See `spec/Core.tla` for the implementation.
+
+#### FIFO outcome with queue drain
+
+- `MC_OpFlushProtocol_3Chain_PromiseShorten` **passes** under the
+  drain (157 distinct / 358 generated). This is the 2-party
+  resolve-to-remote-target case the §4.7 trace targeted.
+- `MC_OpFlushProtocol_SameVatListener` continues to pass (no
+  remote-target resolution, drain is a no-op for this MC).
+- `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party` still violates.
+  The 3-party variant introduces handoff-give cascade alongside the
+  target resolution and reaches a separate race surface not
+  addressed by the queue drain alone.
+- `MC_OpFlushProtocol_4Chain` did not terminate under spot-check
+  observation (state space remains large with the new design;
+  unmeasured).
+- `MC_OpFlushProtocol_TribbleFourWay` similarly unmeasured.
+
+All non-OpFlushProtocol MCs (Naive, Shortening, EJavaFlush,
+NoPromise) keep their previous outcomes and identical state counts.
+No regressions.
 
 #### What's still missing
 
-Two complementary needs surfaced:
+The remaining 3-party and 4-chain failures share a structural
+property: they involve more than one chain link where each link's
+resolution opens a new shortcut at downstream peers. The atomic
+drain catches the 2-party case where there is exactly one
+LocalPromise whose queue could race; with multiple links each peer
+may have a different queueing point, and a flush at one link
+doesn't close the race at another.
 
-1. **Resolver-side queue drain.** When the resolver fires
-   `ResolverResolve` for a remote-target resolution, any pre-existing
-   messages in the resolving `LocalPromise`'s queue must be drained
-   onto the new path **atomically** with (or strictly before) the
-   resolver's subsequent pipelined sends. The simplest model: extend
-   `ResolverResolve` to fold over the queue and route each message
-   via the new resolution's cascade as part of the same action.
-   Alternatively, adopt Ridley's mint mechanism (§9 step 2): mint
-   a fresh local promise `p'`, fulfill `r` with `p'`, and let the
-   intra-vat cascade carry the queue onward — but apply it on the
-   resolver-side trigger rather than the shortener-pull trigger.
-
-2. **Broader-trigger applied to promise-shaped resolutions too.**
-   In the trace, vatB resolves `r=1` to a promise on vatA — also a
-   resolve-to-remote-value — but OpFlushProtocol currently has
-   `PolicyEmitsPromiseShortenNotify = FALSE`, so no `op:flush`
-   fires for promise resolutions. If the broader trigger fired on
-   promise resolutions too, vatA's `r=1` mirror would be embargoed
-   and vatA's subsequent `PeerSend seq=2 ref=1` would be held in
-   `r=1.pending` rather than going directly on the wire to be
-   cascade-shortcut at vatB. That alone might not fix the race
-   (the s4 forward still races), but combined with the resolver-
-   side queue drain it should.
+**Broader-trigger extended to promise-shaped resolutions.** In the
+3-party trace, vatB resolves `r=1` to a promise on vatA — also a
+resolve-to-remote-value — but OpFlushProtocol currently has
+`PolicyEmitsPromiseShortenNotify = FALSE`, so no `op:flush` fires
+for promise resolutions. If the broader trigger also fired on
+promise resolutions, vatA's `r=1` mirror would be embargoed
+(via the listener-embargo path in §9.1) and subsequent
+`PeerSend ... ref=1` calls at vatA would be held in `r=1.pending`
+rather than going directly on the wire. Combined with the
+resolver-side queue drain, this should fix the 3-party variant.
 
 These are real spec questions, not just implementation gaps. The
-broader trigger from §9.1 plus listener embargo is the necessary
-foundation; the next layer needs to address whichever side ends up
-holding pre-flush traffic.
+broader trigger from §9.1 plus listener embargo plus atomic
+resolver-side queue drain is the necessary foundation; extending
+the broader trigger to promise-shaped resolutions is the next
+layer.
 
 ### 9.2 Implementation in this spec
 

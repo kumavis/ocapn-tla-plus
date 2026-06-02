@@ -817,6 +817,25 @@ AppendToManyOutboxes(ch, self, qs, msg) ==
             IF q \in qs /\ q # self THEN Append(ch[self][q], msg)
             ELSE ch[self][q]]]
 
+(* DrainResolveQueueRec: fold over a queue of msgs, calling ApplyRoute
+   on each with a precomputed `route`.  Used by the resolver-initiated
+   flush branch of ResolverResolve to atomically forward any messages
+   that were enqueued at a LocalPromise.queue while the promise was
+   unresolved -- so that the queue drain is sequenced ahead of any
+   subsequent PeerSends from the resolver on the same channel.
+   Critical FIFO sequencing point; see notes/flush-protocols.md §9.1. *)
+RECURSIVE DrainResolveQueueRec(_, _, _, _, _, _)
+DrainResolveQueueRec(self, route, queue, channels0, vats0, delivered0) ==
+    IF queue = << >>
+    THEN [channels |-> channels0, vats |-> vats0, delivered |-> delivered0]
+    ELSE LET msg == Head(queue)
+             rest == Tail(queue)
+             after ==
+                 ApplyRoute(self, route, msg, channels0, vats0, delivered0)
+         IN DrainResolveQueueRec(self, route, rest,
+                after.channels, after.vats, after.delivered)
+
+----------------------------------------------------------------------------
 (* ResolverResolve: actor = self = host[r] (the resolver of LocalPromise *)
 (* vats[self].refs[r]).  All reads via LocalRef(self, _); all writes    *)
 (* scoped to vats[self].refs[r] and self's own outboxes.  Locality      *)
@@ -917,6 +936,31 @@ ResolverResolve ==
                    /\ PolicyResolverInitiatedFlush
                    /\ isTarget
                    /\ TargetHostPeer(self, res) # self
+               \* Resolver-flush drain: any messages already buffered in
+               \* r.queue (forwards that landed at vats[self].refs[r]
+               \* while r was unresolved) must be routed onto the new
+               \* path atomically with the flush emission, so the
+               \* drained messages on `channels[self][_]` are sequenced
+               \* ahead of any later PeerSends from self.  Without this
+               \* fold, the queue would drain later via ProcessPending
+               \* and race new outbound traffic.  See
+               \* notes/flush-protocols.md §9.1.
+               drainRoute ==
+                   IF fireResolverFlush
+                   THEN Route(self, res.refId)
+                   ELSE [tag |-> "wire", peer |-> self, refId |-> r]
+               channelsWithFlush ==
+                   AppendToManyOutboxes(channels, self, listeners,
+                       OpFlush(r))
+               vatsForFlushBranch ==
+                   [vats EXCEPT
+                       ![self].refs[r].resolution = res,
+                       ![self].refs[r].flushPending = listeners,
+                       ![self].refs[r].queue = << >>]
+               drainedAfter ==
+                   DrainResolveQueueRec(self, drainRoute,
+                       entry.queue, channelsWithFlush, vatsForFlushBranch,
+                       delivered)
            IN
               /\ res # ResNone
               \* Defensive: a 3-party listener requires handoff support
@@ -929,13 +973,10 @@ ResolverResolve ==
                           NeedsHandoffIntro(self, l,
                               TargetHostPeer(self, res))))
               /\ (CASE fireResolverFlush
-                       -> /\ vats' =
-                              [vats EXCEPT
-                                  ![self].refs[r].resolution = res,
-                                  ![self].refs[r].flushPending = listeners]
-                          /\ channels' =
-                              AppendToManyOutboxes(channels, self, listeners,
-                                  OpFlush(r))
+                       -> /\ drainRoute.tag \in {"deliver", "wire", "queue"}
+                          /\ vats' = drainedAfter.vats
+                          /\ channels' = drainedAfter.channels
+                          /\ delivered' = drainedAfter.delivered
                           /\ UNCHANGED nextRefId
                    [] fireOpResolveNow
                        -> /\ ListenersNotifyable(self, res, listeners)
@@ -945,6 +986,7 @@ ResolverResolve ==
                                   ![self].refs[r].notified = TRUE,
                                   ![self].nextGiftId = notify.gidNext]
                           /\ channels' = notify.channels
+                          /\ UNCHANGED delivered
                           /\ IF needsHandoff
                              THEN nextRefId' = notify.pwNext
                              ELSE UNCHANGED nextRefId
@@ -952,8 +994,9 @@ ResolverResolve ==
                        -> /\ vats' =
                               [vats EXCEPT ![self].refs[r].resolution = res]
                           /\ UNCHANGED channels
+                          /\ UNCHANGED delivered
                           /\ UNCHANGED nextRefId)
-              /\ UNCHANGED << host, sent, delivered >>
+              /\ UNCHANGED << host, sent >>
               /\ IF ~fireOpResolveNow \/ ~needsHandoff \/ fireResolverFlush
                  THEN HandoffVarsUnchanged
                  ELSE TRUE
