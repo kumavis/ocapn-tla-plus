@@ -582,7 +582,7 @@ The hazard `op:flush` is supposed to neutralise — *path-changes
 racing in-flight traffic on the old path* — exists for **any**
 resolution where the target value sits on a different machine than
 the resolver, regardless of handoffs. The
-[`MC_OpFlushProtocol_3Chain_PromiseShorten`](../models/MC_OpFlushProtocol_3Chain_PromiseShorten.tla)
+[`MC_OpFlushProtocol_2Party_PromiseShorten`](../models/MC_OpFlushProtocol_2Party_PromiseShorten.tla)
 counterexample (see [`path-changes.md`](path-changes.md) §4.7) is a
 minimal witness:
 
@@ -708,7 +708,7 @@ The atomic queue drain alone fixes the 2-party 2-chain race, but
 3-party cases involve a second hazard: the chain of resolutions
 spans multiple links, and the resolver-side flush at one link
 doesn't close the race at the next. Specifically, in the 3-party
-MC `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party`:
+MC `MC_OpFlushProtocol_3Party_PromiseShorten`:
 
 - vatB's resolution of `r=1` (Promise → `ref(vatC, 2)`) is *also* a
   resolve-to-remote-value, but without
@@ -748,28 +748,44 @@ The full fix:
 
 #### FIFO outcome — full broader trigger
 
-- `MC_OpFlushProtocol_3Chain_PromiseShorten`: **PASS**
+- `MC_OpFlushProtocol_2Party_PromiseShorten`: **PASS**
   (333 distinct / 673 generated).
-- `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party`: **PASS**
+- `MC_OpFlushProtocol_3Party_PromiseShorten`: **PASS**
   (319 / 785). Previously a violation; the broader trigger plus
   immediate-notify drain fixes the 3-party race.
-- `MC_OpFlushProtocol_SameVatListener`: unchanged (35 / 57).
+- `MC_OpFlushProtocol_2Party_SameVatListener`: unchanged (35 / 57).
 - All non-OpFlushProtocol MCs keep their previous outcomes and
   identical state counts.
-- `MC_OpFlushProtocol_TribbleFourWay`: still violates (920 / 2149).
-  The "Tribble four-way" trace exposes a cross-channel race that
-  per-session FIFO can't sequence: at the terminal peer, a
-  shortened-path delivery on channel `vatA→vatT` and a long-path
-  forward arriving on channel `vatB→vatT` are FIFO-ordered only
-  within each channel. When the long path takes more wire hops
-  than the short path, the short-path message can land at the
-  terminal first even though both originated from the head before
-  the shortening completed. EJavaFlush exhibits the same
-  limitation; closing it requires either a probe-like end-to-end
-  signal (the EJavaFlush approach in shorter chains, which doesn't
-  generalise either) or a fundamentally different design.
-- `MC_OpFlushProtocol_4Chain`: result still pending under
-  long-running model check.
+- `MC_OpFlushProtocol_TribbleFourWay`: **PASS** (566 distinct /
+  1391 generated). Previously a violation. The fix is a one-conjunct
+  gate on `RepropagatePromiseShorten` (Phase D): re-propagation of a
+  downstream shortening to `chainR`'s upstream listeners is held off
+  until `chainR`'s own flush handshake has completed
+  (`LocalRef(self, chainR).flushPending = {}`). Without the gate the
+  re-propagation emitted an `op:resolve` to the listener *before* the
+  flush-ack of the `op:flush` started by `chainR`'s `ResolverResolve`
+  came back — the "resolve mid-flush" anomaly. Letting the listener
+  switch to the short path only after the flush-ack returns (which is
+  FIFO-after the in-flight long-path send on that channel) closes the
+  race in this three-peer co-terminal topology. The gate is a pure
+  local read-guard: it adds no embargo, no wire op, and no cross-peer
+  read (`flushPending` is `self`'s own resolver-side field). Note the
+  earlier expectation that a cross-channel race would survive the gate
+  did **not** materialise here — the listener-side embargo plus the
+  withdraw-gift round-trip causally orders the long-path forward ahead
+  of the short-path send in every interleaving TLC explored.
+- `MC_OpFlushProtocol_4Party`: still violates (faithful linear-chain
+  limitation). This is the head + 3-distinct-host length-3 linear
+  chain (`EnableRepropagate = FALSE`, so the gate above does not
+  apply). It replaces the former 5-peer `MC_OpFlushProtocol_4Chain`
+  (length-4): the canonical Tribble four-way is itself only
+  four-party, so the extra hop added state-space cost without
+  exercising new structure. The 4-party model reproduces the same
+  `EndToEndRefFIFO` violation as a much smaller, faster witness (the
+  counterexample lands at ~12k generated states vs the 5-peer model
+  still climbing past 35k). The violation is the
+  shortener-pipelines-into-local-queue-ahead-of-wire-forward hazard,
+  not a re-propagation issue.
 
 The complete `OpFlushProtocol` design now consists of:
 
@@ -784,6 +800,12 @@ The complete `OpFlushProtocol` design now consists of:
    `PolicyResolverInitiatedFlush`).
 4. **Atomic listener-side pending drain** in the `op:resolve`
    install branch.
+5. **Re-propagation flush gate** (Phase D). `RepropagatePromiseShorten`
+   only fires once `chainR`'s own flush handshake has drained
+   (`flushPending = {}`), so a learned downstream shortening is never
+   forwarded to upstream listeners while `chainR`'s `op:flush` is
+   still outstanding. Closes the "resolve mid-flush" race that the
+   `MC_OpFlushProtocol_TribbleFourWay` trace exposed.
 
 Each piece addresses a specific FIFO hazard; together they
 mechanically eliminate the path-changes-racing-in-flight traffic
@@ -823,10 +845,14 @@ implements the protocol above faithfully — no compensating mechanisms.
 **FIFO outcome.** The model shows that **Ridley's proposal as
 specified does NOT preserve `EndToEndRefFIFO`** in the chain-shaped
 topologies this spec exercises. Four of the five OpFlushProtocol MCs
-(`MC_OpFlushProtocol_{3Chain_PromiseShorten,
-3Chain_PromiseShorten_3Party, 4Chain, TribbleFourWay}`) violate FIFO
-under faithful Ridley; only `MC_OpFlushProtocol_SameVatListener`
-passes (its topology has no shortening race). See
+(`MC_OpFlushProtocol_{2Party_PromiseShorten, 3Party_PromiseShorten,
+4Party (then the 5-peer _4Chain), TribbleFourWay}`)
+violate FIFO under faithful Ridley; only
+`MC_OpFlushProtocol_2Party_SameVatListener` passes (its topology has no
+shortening race). (Superseded by §9.1: under the broader trigger plus
+the atomic drains and the re-propagation flush gate, the two
+`_PromiseShorten` MCs and `TribbleFourWay` now pass; only the `4Party`
+linear chain still violates.) See
 [`path-changes.md`](path-changes.md) §4.7 for the counterexample trace
 and root-cause analysis.
 
@@ -1070,7 +1096,7 @@ in-flight seq=1. When vatD receives the probe, it emits
 been delivered at vatD. vatB lifts the embargo, drains
 `vats[vatB].refs[2].pending`, and seq=2 follows in order.
 
-`MC_EJavaFlush_3Chain` passes with the current design.
+`MC_EJavaFlush_4Party` passes with the current design.
 
 ### 10.4 Tribble crossing-shorten (modelled; per-node flush only)
 
@@ -1086,9 +1112,14 @@ path it traverses.
 `EndToEndRefFIFO_MC` as expected — the spec faithfully captures the
 DelayedRedirector limitation. [`MC_OpFlushProtocol_TribbleFourWay`](../models/MC_OpFlushProtocol_TribbleFourWay.tla)
 (three-peer co-terminal, `EnableRepropagate = TRUE`, `NumMessages = 2`)
-**passes** `EndToEndRefFIFO_MC`: resolver-initiated `op:flush` to
-listeners (no `fresh` gate) plus `RepropagatePromiseShorten` suffices
-on this topology without Ridley's explicit Bob→Carol flush relay.
+**passes** `EndToEndRefFIFO_MC` (566 distinct / 1391 generated):
+resolver-initiated `op:flush` to listeners (no `fresh` gate) plus
+`RepropagatePromiseShorten` suffices on this topology without Ridley's
+explicit Bob→Carol flush relay — **provided** re-propagation is gated
+on the chain promise's own flush handshake having drained
+(`flushPending = {}`; see §9.1 design item 5). Without that gate the
+re-propagation emits `op:resolve` to the listener mid-flush (before the
+flush-ack returns) and FIFO is violated.
 
 Ridley's `op:flush` proposal addresses the limitation by inverting the
 direction of the handshake (the shortener, not the resolver, sends

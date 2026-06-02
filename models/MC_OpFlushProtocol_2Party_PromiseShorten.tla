@@ -1,9 +1,9 @@
---------------- MODULE MC_OpFlushProtocol_3Chain_PromiseShorten ---------------
+--------------- MODULE MC_OpFlushProtocol_2Party_PromiseShorten ---------------
 (***************************************************************************)
 (* 2-party inter-vat promise-to-promise shortening under OpFlushProtocol   *)
 (* (faithful Ridley op:flush; ocapn#11; see notes/flush-protocols.md §9). *)
 (*                                                                         *)
-(* Topology: same as MC_EJavaFlush_3Chain_PromiseShorten.                  *)
+(* Topology: same as MC_EJavaFlush_2Party_PromiseShorten.                  *)
 (*   HeadPeer = vatA                                                       *)
 (*   host[1]  = vatB   (LocalPromise p_1; listener {HeadPeer = vatA})      *)
 (*   host[2]  = vatA   (LocalPromise p_2; listener {vatB})                 *)

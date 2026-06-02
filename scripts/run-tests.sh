@@ -8,9 +8,9 @@
 #   violation - model checking finds an invariant violation
 #
 # Debug mode (renders a mermaid trace from the .trace.md file):
-#   ./scripts/run-tests.sh --debug MC_NaivePromiseResolution
-#   ./scripts/run-tests.sh --debug MC_EJavaFlush_4Chain
-#   ./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Chain
+#   ./scripts/run-tests.sh --debug MC_NaivePromiseResolution_2Party
+#   ./scripts/run-tests.sh --debug MC_EJavaFlush_5Party
+#   ./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Party
 # runs models/<name>.tla against models/<name>_Debug.cfg (which sets
 # DebugTrace = TRUE and SPECIFICATION = SpecDebug), writes
 # .tlc-logs/<name>.debug.log and .tlc-logs/<name>.trace.md (mermaid).
@@ -36,7 +36,7 @@ mkdir -p "$LOG_DIR"
 
 if [[ "${1:-}" == "--debug" ]]; then
   shift
-  base="${1:?usage: $0 --debug MC_ModuleName (e.g. MC_NaivePromiseResolution)}"
+  base="${1:?usage: $0 --debug MC_ModuleName (e.g. MC_NaivePromiseResolution_2Party)}"
   dbg_cfg="${base}_Debug.cfg"
   if [[ ! -f "models/${base}.tla" || ! -f "models/${dbg_cfg}" ]]; then
     echo "ERROR: expected models/${base}.tla and models/${dbg_cfg}" >&2
@@ -79,25 +79,25 @@ fi
 
 # Tests: scenario MCs in models/ (policy-level race scenarios)
 SCENARIO_TESTS=(
-  "MC_NoPromiseResolution|pass"
-  "MC_NoPromiseResolution_3Chain|pass"
-  "MC_NaivePromiseResolution|violation"
-  "MC_NaivePromiseResolution_PromiseShorten|violation"
-  "MC_NaivePromiseResolution_3Chain|violation"
-  "MC_ShorteningUnsafe_3Chain|violation"
-  "MC_EJavaFlush_3Chain|pass"
-  "MC_EJavaFlush_3Chain_PromiseShorten|pass"
-  "MC_EJavaFlush_3Chain_PromiseShorten_3Party|violation"
-  "MC_EJavaFlush_4Chain|pass"
-  "MC_OpFlushProtocol_3Chain_PromiseShorten|pass"
-  "MC_OpFlushProtocol_3Chain_PromiseShorten_3Party|pass"
+  "MC_NoPromiseResolution_2Party|pass"
+  "MC_NoPromiseResolution_3Party|pass"
+  "MC_NaivePromiseResolution_2Party|violation"
+  "MC_NaivePromiseResolution_2Party_PromiseShorten|violation"
+  "MC_NaivePromiseResolution_3Party|violation"
+  "MC_ShorteningUnsafe_4Party|violation"
+  "MC_EJavaFlush_4Party|pass"
+  "MC_EJavaFlush_2Party_PromiseShorten|pass"
+  "MC_EJavaFlush_3Party_PromiseShorten|violation"
+  "MC_EJavaFlush_5Party|pass"
+  "MC_OpFlushProtocol_4Party|violation"
+  "MC_OpFlushProtocol_2Party_PromiseShorten|pass"
+  "MC_OpFlushProtocol_3Party_PromiseShorten|pass"
   "MC_EJavaFlush_TribbleFourWay|violation"
-  "MC_OpFlushProtocol_TribbleFourWay|violation"
-  "MC_OpFlushProtocol_4Chain|violation"
+  "MC_OpFlushProtocol_TribbleFourWay|pass"
   "MC_SubscribeAfterResolve|pass"
   "MC_SubscribeAfterResolve_ThreeParty|pass"
-  "MC_EJavaFlush_SameVatListener|pass"
-  "MC_OpFlushProtocol_SameVatListener|pass"
+  "MC_EJavaFlush_2Party_SameVatListener|pass"
+  "MC_OpFlushProtocol_2Party_SameVatListener|pass"
   "MC_TerminalHandoff_Baseline|pass"
   "MC_TerminalHandoff_WithForwarder|violation"
   "MC_ConcurrentHandoffs|pass"
@@ -197,6 +197,6 @@ done
 echo
 echo "Summary: $PASS as-expected, $FAIL mismatched, $UNEXPECTED unexpected-error"
 echo "Logs:    $LOG_DIR"
-echo "Debug:   $0 --debug MC_NaivePromiseResolution"
+echo "Debug:   $0 --debug MC_NaivePromiseResolution_2Party"
 
 [[ $FAIL -eq 0 && $UNEXPECTED -eq 0 ]] || exit 1

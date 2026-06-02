@@ -1,7 +1,7 @@
---------------- MODULE MC_OpFlushProtocol_SameVatListener ---------------
+--------------- MODULE MC_OpFlushProtocol_2Party_SameVatListener ---------------
 (***************************************************************************)
 (* Same-vat listener regression under OpFlushProtocol.  Topology and       *)
-(* rationale mirror MC_EJavaFlush_SameVatListener.                         *)
+(* rationale mirror MC_EJavaFlush_2Party_SameVatListener.                         *)
 (*                                                                         *)
 (* Pre-fix path: ResolverResolve at vatA for refs[2] would take fireOpFlush *)
 (* and call AppendToManyOutboxes(channels, vatA, {vatA}, OpFlush(2)),     *)

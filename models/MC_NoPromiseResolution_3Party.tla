@@ -1,4 +1,4 @@
---------------------- MODULE MC_NoPromiseResolution_3Chain ---------------------
+--------------------- MODULE MC_NoPromiseResolution_3Party ---------------------
 (***************************************************************************)
 (* ChainLength = 3 (two promises + terminal), NoPromiseResolution policy. *)
 (* host existentially chosen at Init.  Expected: holds.                   *)

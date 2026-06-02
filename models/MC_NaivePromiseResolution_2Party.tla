@@ -1,4 +1,4 @@
---------------------- MODULE MC_NaivePromiseResolution ---------------------
+--------------------- MODULE MC_NaivePromiseResolution_2Party ---------------------
 (***************************************************************************)
 (* Canonical naive race: 1-promise chain with terminal at the head peer.   *)
 (*                                                                         *)

@@ -60,7 +60,8 @@ Modelled by `Unit_LocalShorten_Cascade` (chain
 `HeadPeer = vatA hosts p_1, p_2; vatB hosts the terminal`; `p_1`
 resolves to `p_2`, both on vatA, then `p_2` resolves to the terminal —
 sends pipelined into `p_1.queue` cascade into `p_2.queue` and out the
-wire). The intermediate chain MCs (`MC_*_3Chain`, `MC_*_4Chain`)
+wire). The intermediate linear-chain MCs (the `MC_*_NParty` models,
+e.g. `MC_EJavaFlush_4Party` / `MC_EJavaFlush_5Party`)
 exercise the same mechanism as a side effect: each non-terminal
 `ResolverResolve` records a `resolution = ResRef(host[r+1], r+1)`
 on the LocalPromise without firing any wire message.
@@ -103,9 +104,9 @@ own dispatch through it. The protocol surface decomposes into:
    EJava violates FIFO; OpFlush passes (§3.11).
 
 Phase A surfaces the race directly:
-[`MC_NaivePromiseResolution_PromiseShorten.tla`](../models/MC_NaivePromiseResolution_PromiseShorten.tla)
+[`MC_NaivePromiseResolution_2Party_PromiseShorten.tla`](../models/MC_NaivePromiseResolution_2Party_PromiseShorten.tla)
 violates `EndToEndRefFIFO_MC` on the new code path, dual to the
-canonical `MC_NaivePromiseResolution` for Targets. The Phase A
+canonical `MC_NaivePromiseResolution_2Party` for Targets. The Phase A
 two-party form alone is not enough to reproduce the **Tribble
 four-way scenario** (see §3.1) — the multi-hop re-propagation in
 step 4 and the flush extension in step 5 are still required.
@@ -129,7 +130,7 @@ state-changing path-change events.
 |---|---|---|---|
 | `NoPromiseResolution` | No `op:resolve` is ever emitted; listeners stay on their `RemotePromise`s forever. | No path change ⇒ no hazard. | Holds. |
 | `NaivePromiseResolution` | Listener installs `localResolution` immediately on `op:resolve` receipt. | Path change with zero synchronisation — in-flight pipelined sends on the old path race against new sends on the new path. | Violates `EndToEndRefFIFO` on a 2-chain (canonical counterexample). |
-| `ShorteningUnsafe` | Same as Naive (the name is OCapN-colloquial for "installs the new path without a flush", not literally about §1.2 promise shortening). | Same hazard, demonstrated on longer chains. | Violates `EndToEndRefFIFO` on a 3-chain (`MC_ShorteningUnsafe_3Chain`). |
+| `ShorteningUnsafe` | Same as Naive (the name is OCapN-colloquial for "installs the new path without a flush", not literally about §1.2 promise shortening). | Same hazard, demonstrated on longer chains. | Violates `EndToEndRefFIFO` on a 3-chain (`MC_ShorteningUnsafe_4Party`). |
 | `EJavaFlush` | Faithful e-on-java `DelayedRedirector` model: subscriber-initiated end-to-end probe + ack along the old path before committing to the new one. New sends buffer locally until the ack returns. | Probe rides the same FIFO channels as in-flight sends, so the ack is a protocol-level guarantee that everything pre-flush has been processed at the terminal. | Holds for linear chains; **does not** hold for Tribble four-way (§3.1). |
 | `OpFlushProtocol` | Resolver-initiated: `op:flush` to listeners (each listener acks via FIFO of its own outbox), then resolver-initiated probe + ack to the terminal target, only then `op:resolve` to listeners. Locality-clean: every state transition is driven by an explicit protocol message; no peer reads another peer's channel state. | Same end-to-end primitive (probe + ack) as EJavaFlush, layered under a listener-flush handshake. | Holds for linear chains (modelled three-party form of the Ridley proposal); the four-party form is future work (§3.1). |
 
@@ -166,7 +167,7 @@ phases; Phases A, B, C (2- and 3-party flush), and Phase D
 emits `desc:import-promise` / `desc:export-promise` when listeners are
 two-party-reachable. Receive path was already wired. Gated to
 `NaivePromiseResolution` and `ShorteningUnsafe`.
-[`MC_NaivePromiseResolution_PromiseShorten`](../models/MC_NaivePromiseResolution_PromiseShorten.tla)
+[`MC_NaivePromiseResolution_2Party_PromiseShorten`](../models/MC_NaivePromiseResolution_2Party_PromiseShorten.tla)
 and [`Unit_PromiseShorten_TwoParty`](../tests/Unit_PromiseShorten_TwoParty.tla)
 exercise it.
 
@@ -183,9 +184,9 @@ that prevents a degenerate self-cycle under v0 globally-shared chain
 refIds). `ResolverResolve` fires the 3-party handoff path
 (`firePromiseShorten3Party`) under `NaivePromiseResolution` and
 `ShorteningUnsafe`. Witnessed by `Unit_PromiseShorten_ThreeParty`
-and exercised by `MC_NaivePromiseResolution_3Chain` (Naive surfaces
+and exercised by `MC_NaivePromiseResolution_3Party` (Naive surfaces
 the new race with `EndToEndRefFIFO_MC` violation; the chain MC is
-the dual of `MC_NaivePromiseResolution_PromiseShorten` for
+the dual of `MC_NaivePromiseResolution_2Party_PromiseShorten` for
 three-party chains).
 
 **Phase C — flush extensions (done; see §3.10).** 2-party and
@@ -195,12 +196,12 @@ three-party chains).
 **EJavaFlush** 3-party emission only; **OpFlushProtocol** uses `OpFlushCoversPromise` /
 `OpFlushResolverCoversPromise` (no `fresh` gate). Head-hop (`r = 1`)
 and `CoTerminalPromiseHost` limit resolver-initiated 3PHO on long
-chains (`MC_EJavaFlush_4Chain` ~2554 states). Witnessed by `MC_EJavaFlush_3Chain_PromiseShorten`,
-`MC_OpFlushProtocol_3Chain_PromiseShorten`,
-`MC_EJavaFlush_3Chain_PromiseShorten_3Party`, and
-`MC_OpFlushProtocol_3Chain_PromiseShorten_3Party` (the latter pair
+chains (`MC_EJavaFlush_5Party` ~2554 states). Witnessed by `MC_EJavaFlush_2Party_PromiseShorten`,
+`MC_OpFlushProtocol_2Party_PromiseShorten`,
+`MC_EJavaFlush_3Party_PromiseShorten`, and
+`MC_OpFlushProtocol_3Party_PromiseShorten` (the latter pair
 use `NumMessages = 1` for a single in-flight send; the two-message
-race remains in `MC_NaivePromiseResolution_3Chain`).
+race remains in `MC_NaivePromiseResolution_3Party`).
 
 **Phase D — re-propagation + Tribble MCs (done; see §3.11).**
 `RepropagatePromiseShorten` (gated by `EnableRepropagate`) notifies
@@ -246,14 +247,14 @@ dynamic MC with `EnableHandoff = TRUE` should add both invariants to its
 `.cfg`. Per-state cost is O(|Peers|² × FIFO depth) — a few percent at
 most — and state counts are unchanged.
 
-Affected configs: `MC_EJavaFlush_3Chain.cfg`, `MC_EJavaFlush_4Chain.cfg`,
-`MC_OpFlushProtocol_4Chain.cfg`, `MC_ShorteningUnsafe_3Chain.cfg`,
+Affected configs: `MC_EJavaFlush_4Party.cfg`, `MC_EJavaFlush_5Party.cfg`,
+`MC_OpFlushProtocol_4Party.cfg`, `MC_ShorteningUnsafe_4Party.cfg`,
 `MC_TerminalHandoff_Baseline.cfg`, `MC_TerminalHandoff_WithForwarder.cfg`,
 `MC_ConcurrentHandoffs.cfg`, and the four `Unit_Handoff_*.cfg` units.
 
 ### 3.6 EJavaFlush debug invariant `NoSlowPathCompletion_MC` no longer scopes the slow path
 
-`MC_EJavaFlush_3Chain.tla` and `MC_EJavaFlush_4Chain.tla` define a debug
+`MC_EJavaFlush_4Party.tla` and `MC_EJavaFlush_5Party.tla` define a debug
 invariant intended to force TLC's BFS to render the shortest trace that
 exercises the EJavaFlush slow path (`OpEFlushProbe -> OpEFlushProbeAck
 -> ProcessHold` drain). The predicate matches a `RemotePromise` with
@@ -271,7 +272,7 @@ debug runs).
 
 Fix: scope the existential to chain refs only — replace
 `\E r \in 1..MaxRefId` with `\E r \in 1..ChainLength` in both EJavaFlush
-model files. (`MC_OpFlushProtocol_4Chain.tla`'s predicate is not
+model files. (`MC_OpFlushProtocol_4Party.tla`'s predicate is not
 affected: it requires `flushPhase = "acked"`, which only the
 resolver-side slow-path actions set, so handoff withdraw-promises
 cannot satisfy it.)
@@ -280,7 +281,7 @@ cannot satisfy it.)
 
 The chain MCs incidentally cover the `desc:handoff-give` chain-form
 `chainEmbargo` branch in `ReceiveNetwork` (an `embargo=TRUE` invariant
-violation is reachable in `MC_EJavaFlush_3Chain` within ~180 distinct
+violation is reachable in `MC_EJavaFlush_4Party` within ~180 distinct
 states), but the focused units that were supposed to pin this slow path
 had been silently downgraded by the descriptor refactor into 2-party
 `desc:export-target` / `desc:import-target` scenarios. Restored as
@@ -353,12 +354,12 @@ Tests added:
   `channels[vatB][vatA]` after vatB's `ResolverResolve` fires.
   Witness invariant `NoExportPromiseEmitted_MC` is the negation;
   expected outcome: violation.
-- **[`models/MC_NaivePromiseResolution_PromiseShorten.tla`](../models/MC_NaivePromiseResolution_PromiseShorten.tla)**
+- **[`models/MC_NaivePromiseResolution_2Party_PromiseShorten.tla`](../models/MC_NaivePromiseResolution_2Party_PromiseShorten.tla)**
   — surfaces the new race surface. Two peers, ChainLength = 3,
   `host = <<vatB, vatA, vatA>>` (so the new promise's host vatA is
   also the listener; chain terminus on vatA). Expected outcome:
   `EndToEndRefFIFO_MC` violation, dual to the Target form in
-  `MC_NaivePromiseResolution`.
+  `MC_NaivePromiseResolution_2Party`.
 
 Why gated to Naive + Shortening only:
 
@@ -371,8 +372,8 @@ Why gated to Naive + Shortening only:
   emission under those policies would silently introduce FIFO
   violations on flush-protocol MCs that currently pass — masking
   real bugs.
-- The existing flush-protocol chain MCs (`MC_EJavaFlush_3Chain`,
-  `MC_EJavaFlush_4Chain`, `MC_OpFlushProtocol_4Chain`) all use 3+
+- The existing flush-protocol chain MCs (`MC_EJavaFlush_4Party`,
+  `MC_EJavaFlush_5Party`, `MC_OpFlushProtocol_4Party`) all use 3+
   distinct peers, so even after Phase B introduces three-party
   promise shortening, they need Phase C before they exercise
   promise-shaped chains end-to-end.
@@ -420,14 +421,14 @@ Tests added:
   HeadPeer = vatA, listener vatA, capHost vatC). Witness invariant
   `NoChainHandoffGiveForPromise_MC` is the negation; expected
   outcome: violation.
-- **[`models/MC_NaivePromiseResolution_3Chain.tla`](../models/MC_NaivePromiseResolution_3Chain.tla)**
+- **[`models/MC_NaivePromiseResolution_3Party.tla`](../models/MC_NaivePromiseResolution_3Party.tla)**
   — surfaces the three-party race under Naive: vatB's chain
   resolution becomes a 3PHO at runtime, vatA's withdraw replies
   `desc:import-promise(2)` (Phase B's `LocalPromise` withdraw
   branch), and the resulting shortened path through the new pw
   RemotePromise races the in-flight forwards on the old path.
   Expected outcome: `EndToEndRefFIFO_MC` violation, dual to
-  `MC_NaivePromiseResolution_PromiseShorten` but with three peers
+  `MC_NaivePromiseResolution_2Party_PromiseShorten` but with three peers
   and an extra chain hop.
 
 ### 3.10 Phase C: 2-party flush extension; scope tightening
@@ -469,13 +470,13 @@ Spec delta in [`spec/Core.tla`](../spec/Core.tla):
 
 Tests added:
 
-- **[`models/MC_EJavaFlush_3Chain_PromiseShorten.tla`](../models/MC_EJavaFlush_3Chain_PromiseShorten.tla)**
+- **[`models/MC_EJavaFlush_2Party_PromiseShorten.tla`](../models/MC_EJavaFlush_2Party_PromiseShorten.tla)**
   — `host = <<vatB, vatA, vatB>>` (terminal on vatB). vatA's
   chain advance emits `desc:export-target` (not `import-target`),
   which is never on the `sameConn` fast path, so vatB takes the
   slow embargo + probe path on its `RemotePromise`. Expected
   outcome: pass.
-- **[`models/MC_OpFlushProtocol_3Chain_PromiseShorten.tla`](../models/MC_OpFlushProtocol_3Chain_PromiseShorten.tla)**
+- **[`models/MC_OpFlushProtocol_2Party_PromiseShorten.tla`](../models/MC_OpFlushProtocol_2Party_PromiseShorten.tla)**
   — same topology, `OpFlushProtocol`. The resolver-initiated
   `op:flush` -> `op:flush-ack` -> `SendTargetFlushProbe` ->
   `SendOpResolveAfterFlush` handshake runs for the
@@ -485,7 +486,7 @@ Why naive 3-party widening exploded state (historical) and how it
 was fixed:
 
 - Naively widening `firePromiseShorten3Party` to flush policies at
-  every middle hop blew up `MC_EJavaFlush_4Chain` (>1.3M states).
+  every middle hop blew up `MC_EJavaFlush_5Party` (>1.3M states).
 - **Fix:** `ListenersWitnessPipelined` (`pipelinedListeners` on the
   resolver's `LocalPromise`, not a cross-peer `fresh` read) + head-hop
   (`r = 1`) + `CoTerminalPromiseHost` for **EJavaFlush** 3-party only
@@ -594,17 +595,17 @@ under a flush policy would enqueue `op:flush` on `channels[self][self]`
 in an inbox arm that requires `entry.kind = "RemotePromise"` — but the
 self-receiver holds a LocalPromise (it is the resolver), so the
 receive is disabled and the self-loop FIFO blocks every subsequent
-message. `MC_EJavaFlush_SameVatListener` exercises the fix.
+message. `MC_EJavaFlush_2Party_SameVatListener` exercises the fix.
 
 ### §4.5 EJavaFlush 3-party promise-shortening does NOT preserve FIFO
 
-`MC_EJavaFlush_3Chain_PromiseShorten_3Party` previously declared
+`MC_EJavaFlush_3Party_PromiseShorten` previously declared
 `NumMessages = 1` and passed — but a single delivery has no FIFO
 surface to test, so the pass was vacuous. Bumping to `NumMessages = 2`
 surfaces a real FIFO inversion (seq 2 delivered before seq 1) and the
 MC is now declared `violation` to be honest about the gap.
 
-The companion `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party` with
+The companion `MC_OpFlushProtocol_3Party_PromiseShorten` with
 the same bump still passes — OpFlushProtocol's per-node flush handles
 the 3-party shortening case that EJavaFlush's listener-side embargo
 does not.
@@ -640,11 +641,11 @@ intra-vat queue cascade, exactly as Ridley §9 describes.
 
 | MC | Before (resolver-pushed) | After (faithful Ridley) |
 |---|---|---|
-| `MC_OpFlushProtocol_3Chain_PromiseShorten` | pass | **violation** |
-| `MC_OpFlushProtocol_3Chain_PromiseShorten_3Party` | pass | **violation** |
-| `MC_OpFlushProtocol_4Chain` | pass | **violation** |
+| `MC_OpFlushProtocol_2Party_PromiseShorten` | pass | **violation** |
+| `MC_OpFlushProtocol_3Party_PromiseShorten` | pass | **violation** |
+| `MC_OpFlushProtocol_4Party` (then `_4Chain`, 5 peers) | pass | **violation** |
 | `MC_OpFlushProtocol_TribbleFourWay` | pass (safety only) | **violation** |
-| `MC_OpFlushProtocol_SameVatListener` | pass | pass (same 35/57) |
+| `MC_OpFlushProtocol_2Party_SameVatListener` | pass | pass (same 35/57) |
 
 The four "before → violation" transitions are the finding: **Ridley's
 `op:flush` proposal AS SPECIFIED in the cited comments does NOT
@@ -654,7 +655,7 @@ its topology has no shortening race (all references are local to one
 vat).
 
 **Counterexample shape (representative of all four violations).**
-Shortest trace on `MC_OpFlushProtocol_3Chain_PromiseShorten`,
+Shortest trace on `MC_OpFlushProtocol_2Party_PromiseShorten`,
 topology `host = <<vatB, vatA, vatB>>`, `NumMessages = 2`. **Notably,
 `InitiateFlush` never fires in this trace** — Ridley's flush
 machinery is never invoked. The violation surfaces purely from the

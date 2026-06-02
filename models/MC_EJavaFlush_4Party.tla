@@ -1,6 +1,6 @@
----------------------- MODULE MC_EJavaFlush_3Chain ----------------------
+---------------------- MODULE MC_EJavaFlush_4Party ----------------------
 (***************************************************************************)
-(* EJavaFlush on a 3-hop chain.                                            *)
+(* EJavaFlush on a 4-party linear chain (ChainLength=3, 3 hops).           *)
 (*                                                                         *)
 (*   Peers   = {vatA, vatB, vatC, vatD}                                    *)
 (*   HeadPeer= vatA                                                        *)
@@ -10,11 +10,11 @@
 (* propagation), the slow-path probe + ack ride end-to-end through         *)
 (* vatC to vatD and back, guaranteeing that any pre-resolve forwards       *)
 (* have been processed at vatD before vatB commits to the post-resolution  *)
-(* path.  Expected to pass; the 3-chain is the smallest scope where a     *)
+(* path.  Expected to pass; this 3-hop chain is the smallest scope where a  *)
 (* purely local "outbox empty" embargo signal would fail (see              *)
 (* ../notes/flush-protocols.md section 10.3).  See                         *)
-(* MC_EJavaFlush_4Chain for the Tribble-style race that remains a          *)
-(* tracked limitation of the EJavaFlush family.                            *)
+(* MC_EJavaFlush_TribbleFourWay for the Tribble-style crossing-shorten     *)
+(* race that remains a tracked limitation of the EJavaFlush family.        *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences

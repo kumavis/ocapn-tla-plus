@@ -101,7 +101,7 @@ and dispatch live in [`spec/Core.tla`](spec/Core.tla):
   ref-1 sends and post-resolve direct sends race at the terminal.
   Violates `EndToEndRefFIFO` on a 2-chain.
 - **`"ShorteningUnsafe"`** — same shape as Naive, demonstrated on a
-  longer chain (`MC_ShorteningUnsafe_3Chain`: 4 peers, 3 hops). Same
+  longer chain (`MC_ShorteningUnsafe_4Party`: 4 peers, 3 hops). Same
   unguarded path change. Violates `EndToEndRefFIFO`.
 - **`"EJavaFlush"`** — faithful model of e-on-java's
   `DelayedRedirector`. Subscriber-initiated end-to-end flush: on
@@ -211,21 +211,21 @@ ocapn-tla-plus/
 │   ├── OpFlushProtocol.tla  # owns InitiateFlush + op:flush receive
 │   └── OpFlushProtocolHelpers.tla
 ├── models/                # scenario MCs (policy-level race scenarios)
-│   ├── MC_NoPromiseResolution.tla / .cfg
-│   ├── MC_NoPromiseResolution_3Chain.tla / .cfg
-│   ├── MC_NaivePromiseResolution.tla / .cfg
-│   ├── MC_NaivePromiseResolution_PromiseShorten.tla / .cfg  (Phase A: 2-party violation)
-│   ├── MC_NaivePromiseResolution_3Chain.tla / .cfg          (Phase B: 3-party violation)
-│   ├── MC_ShorteningUnsafe_3Chain.tla / .cfg
-│   ├── MC_EJavaFlush_3Chain.tla / .cfg
-│   ├── MC_EJavaFlush_3Chain_PromiseShorten.tla / .cfg       (Phase C: 2-party EJava pass)
-│   ├── MC_EJavaFlush_3Chain_PromiseShorten_3Party.tla / .cfg (Phase C: 3-party EJava pass)
-│   ├── MC_EJavaFlush_4Chain.tla / .cfg
+│   ├── MC_NoPromiseResolution_2Party.tla / .cfg
+│   ├── MC_NoPromiseResolution_3Party.tla / .cfg
+│   ├── MC_NaivePromiseResolution_2Party.tla / .cfg
+│   ├── MC_NaivePromiseResolution_2Party_PromiseShorten.tla / .cfg  (Phase A: 2-party violation)
+│   ├── MC_NaivePromiseResolution_3Party.tla / .cfg          (Phase B: 3-party violation)
+│   ├── MC_ShorteningUnsafe_4Party.tla / .cfg
+│   ├── MC_EJavaFlush_4Party.tla / .cfg
+│   ├── MC_EJavaFlush_2Party_PromiseShorten.tla / .cfg       (Phase C: 2-party EJava pass)
+│   ├── MC_EJavaFlush_3Party_PromiseShorten.tla / .cfg (Phase C: 3-party EJava pass)
+│   ├── MC_EJavaFlush_5Party.tla / .cfg
 │   ├── MC_EJavaFlush_TribbleFourWay.tla / .cfg              (Phase D: Tribble, expect violation)
-│   ├── MC_OpFlushProtocol_3Chain_PromiseShorten.tla / .cfg  (Phase C: 2-party OpFlush pass)
-│   ├── MC_OpFlushProtocol_3Chain_PromiseShorten_3Party.tla / .cfg (Phase C: 3-party OpFlush pass)
+│   ├── MC_OpFlushProtocol_4Party.tla / .cfg                 (linear chain; expect violation)
+│   ├── MC_OpFlushProtocol_2Party_PromiseShorten.tla / .cfg  (Phase C: 2-party OpFlush pass)
+│   ├── MC_OpFlushProtocol_3Party_PromiseShorten.tla / .cfg (Phase C: 3-party OpFlush pass)
 │   ├── MC_OpFlushProtocol_TribbleFourWay.tla / .cfg         (Phase D: Tribble, expect pass)
-│   ├── MC_OpFlushProtocol_4Chain.tla / .cfg
 │   ├── MC_SubscribeAfterResolve.tla / .cfg       (op:listen subscription)
 │   ├── MC_TerminalHandoff_Baseline.tla / .cfg    (3PHO baseline)
 │   ├── MC_TerminalHandoff_WithForwarder.tla / .cfg (3PHO + forwarder race)
@@ -286,10 +286,10 @@ exits non-zero on any unexpected outcome (`pass` vs `violation`).
 ### Debug trace + mermaid + Lamport space-time diagram
 
 ```bash
-./scripts/run-tests.sh --debug MC_NaivePromiseResolution
-./scripts/run-tests.sh --debug MC_EJavaFlush_3Chain
-./scripts/run-tests.sh --debug MC_EJavaFlush_4Chain
-./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Chain
+./scripts/run-tests.sh --debug MC_NaivePromiseResolution_2Party
+./scripts/run-tests.sh --debug MC_EJavaFlush_4Party
+./scripts/run-tests.sh --debug MC_EJavaFlush_5Party
+./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Party
 ```
 
 Outputs in `.tlc-logs/`:
@@ -309,8 +309,8 @@ Outputs in `.tlc-logs/`:
 ```bash
 java -cp ~/tla/tla2tools.jar:lib:spec:models:tests tlc2.TLC \
      -workers auto \
-     -config models/MC_NoPromiseResolution_3Chain.cfg \
-     models/MC_NoPromiseResolution_3Chain.tla
+     -config models/MC_NoPromiseResolution_3Party.cfg \
+     models/MC_NoPromiseResolution_3Party.tla
 ```
 
 ## What this shows

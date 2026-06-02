@@ -927,7 +927,7 @@ ResolverResolve ==
                \* Per-session FIFO sequences pre-resolve pipelined sends
                \* ahead of the eventual resolve install at the listener,
                \* neutralising the cascade-shortcut race demonstrated in
-               \* MC_OpFlushProtocol_3Chain_PromiseShorten and (with the
+               \* MC_OpFlushProtocol_2Party_PromiseShorten and (with the
                \* promise-shaped extension) MC_OpFlushProtocol_..._3Party.
                \* See notes/flush-protocols.md §9.1.
                fireResolverFlush ==
@@ -1054,6 +1054,18 @@ RepropagatePromiseShorten ==
         /\ LocalRef(self, chainR).resolution.refId = recvR
         /\ LocalRef(self, chainR).listeners # {}
         /\ ~LocalRef(self, chainR).repropNotified
+        \* Respect an in-flight flush handshake on chainR.  When chainR's
+        \* own ResolverResolve resolved it to a remote value, it started a
+        \* flush handshake (flushPending = listeners, notified = FALSE) and
+        \* deferred its op:resolve until ReceiveOpFlushAck drains the acks.
+        \* Re-propagating the downstream shortening here while that handshake
+        \* is still outstanding would emit an op:resolve to chainR's
+        \* listeners *before* the flush-ack returns -- the very "resolve
+        \* mid-flush" anomaly seen in MC_OpFlushProtocol_TribbleFourWay.
+        \* Gate on flushPending = {} so repropagation only fires once any
+        \* outstanding handshake for chainR has completed (or never began,
+        \* under the non-flush policies where flushPending stays {}).
+        /\ LocalRef(self, chainR).flushPending = {}
         /\ LET res == LocalRef(self, recvR).localResolution
                listeners == LocalRef(self, chainR).listeners \ {self}
                isTarget == IsResolutionTarget(self, res)
@@ -1292,7 +1304,7 @@ ReceiveNetwork ==
                         \* whose queue is independent of the sender's
                         \* FIFO -- the new direct path can bypass
                         \* that queue, surfacing an ordering race
-                        \* (see MC_EJavaFlush_3Chain_PromiseShorten
+                        \* (see MC_EJavaFlush_2Party_PromiseShorten
                         \* counterexample).  Under EJavaFlush this
                         \* forces the slow embargo + e-flush-probe
                         \* path for Promise shortening, matching the

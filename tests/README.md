@@ -72,16 +72,16 @@ for a third-party introduction).  They pin the chain-form
 
 The race surfaces these unlock are exercised at policy level by:
 
-- [`MC_NaivePromiseResolution_PromiseShorten`](../models/MC_NaivePromiseResolution_PromiseShorten.tla)
-  (Phase A 2-party form, dual to `MC_NaivePromiseResolution` for the
+- [`MC_NaivePromiseResolution_2Party_PromiseShorten`](../models/MC_NaivePromiseResolution_2Party_PromiseShorten.tla)
+  (Phase A 2-party form, dual to `MC_NaivePromiseResolution_2Party` for the
   Target case).
-- [`MC_NaivePromiseResolution_3Chain`](../models/MC_NaivePromiseResolution_3Chain.tla)
+- [`MC_NaivePromiseResolution_3Party`](../models/MC_NaivePromiseResolution_3Party.tla)
   (Phase B 3-party form; same race surface across three peers).
-- [`MC_EJavaFlush_3Chain_PromiseShorten`](../models/MC_EJavaFlush_3Chain_PromiseShorten.tla)
-  and [`MC_OpFlushProtocol_3Chain_PromiseShorten`](../models/MC_OpFlushProtocol_3Chain_PromiseShorten.tla)
+- [`MC_EJavaFlush_2Party_PromiseShorten`](../models/MC_EJavaFlush_2Party_PromiseShorten.tla)
+  and [`MC_OpFlushProtocol_2Party_PromiseShorten`](../models/MC_OpFlushProtocol_2Party_PromiseShorten.tla)
   (Phase C 2-party flush extension; expected pass).
-- [`MC_EJavaFlush_3Chain_PromiseShorten_3Party`](../models/MC_EJavaFlush_3Chain_PromiseShorten_3Party.tla)
-  and [`MC_OpFlushProtocol_3Chain_PromiseShorten_3Party`](../models/MC_OpFlushProtocol_3Chain_PromiseShorten_3Party.tla)
+- [`MC_EJavaFlush_3Party_PromiseShorten`](../models/MC_EJavaFlush_3Party_PromiseShorten.tla)
+  and [`MC_OpFlushProtocol_3Party_PromiseShorten`](../models/MC_OpFlushProtocol_3Party_PromiseShorten.tla)
   (Phase C 3-party; `NumMessages = 1`; expected pass).
 - [`MC_EJavaFlush_TribbleFourWay`](../models/MC_EJavaFlush_TribbleFourWay.tla)
   (Phase D; expected `EndToEndRefFIFO_MC` violation).

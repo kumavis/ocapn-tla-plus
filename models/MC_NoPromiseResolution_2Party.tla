@@ -1,4 +1,4 @@
------------------------- MODULE MC_NoPromiseResolution ------------------------
+------------------------ MODULE MC_NoPromiseResolution_2Party ------------------------
 (***************************************************************************)
 (* NoPromiseResolution: listeners = {} so no op:resolve ever fires; every  *)
 (* ref-1 send rides the wire through the chain.  ChainLength = 2; host    *)

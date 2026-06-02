@@ -1,4 +1,4 @@
---------------- MODULE MC_NaivePromiseResolution_PromiseShorten ---------------
+--------------- MODULE MC_NaivePromiseResolution_2Party_PromiseShorten ---------------
 (***************************************************************************)
 (* Inter-vat promise-to-promise shortening under NaivePromiseResolution.   *)
 (* Models §1.2.b's two-party form (Phase A): the resolver vatB emits an    *)

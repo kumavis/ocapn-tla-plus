@@ -1,6 +1,7 @@
----------------------- MODULE MC_EJavaFlush_4Chain ----------------------
+---------------------- MODULE MC_EJavaFlush_5Party ----------------------
 (***************************************************************************)
-(* CANONICAL EJavaFlush on a 4-chain (faithful DelayedRedirector model).   *)
+(* CANONICAL EJavaFlush on a 5-party linear chain (ChainLength=4, 4 hops;   *)
+(* faithful DelayedRedirector model).                                       *)
 (* On op:resolve at host[2] for vats[host[2]].refs[3], if `fresh = FALSE`   *)
 (* (i.e., host[2] has previously pipelined sends through this ref) and    *)
 (* the new target is not in the same vat as the current resolver, host[2] *)
@@ -66,7 +67,7 @@ EventualDelivery_MC == PS!EventualDelivery
 WireDescriptorContract_MC == PS!WireDescriptorContract
 OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
-\* Debug-only forced violation: see MC_EJavaFlush_3Chain.tla for the
+\* Debug-only forced violation: see MC_EJavaFlush_4Party.tla for the
 \* rationale; identical predicate, also scoped to chain refs only.
 NoSlowPathCompletion_MC ==
     ~( /\ Len(delivered) = NumMessages

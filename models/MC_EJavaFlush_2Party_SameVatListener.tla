@@ -1,4 +1,4 @@
------------------- MODULE MC_EJavaFlush_SameVatListener ------------------
+------------------ MODULE MC_EJavaFlush_2Party_SameVatListener ------------------
 (***************************************************************************)
 (* Same-vat listener regression for concern 7 (self-loop on resolve       *)
 (* notifications).  Topology host = <<vatA, vatA, vatB>>:                 *)
@@ -21,7 +21,7 @@
 (* AppendResolveNotifications iterates, so no self-addressed op:resolve   *)
 (* is emitted; refs[2] resolves locally without wire traffic.  The       *)
 (* q # self filter inside AppendToManyOutboxes is also defensive but is  *)
-(* exercised by MC_OpFlushProtocol_SameVatListener instead (that policy  *)
+(* exercised by MC_OpFlushProtocol_2Party_SameVatListener instead (that policy  *)
 (* emits op:flush via AppendToManyOutboxes).                              *)
 (*                                                                         *)
 (* Expected: all invariants hold.                                        *)

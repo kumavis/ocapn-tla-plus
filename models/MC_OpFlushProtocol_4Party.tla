@@ -1,21 +1,29 @@
--------------------- MODULE MC_OpFlushProtocol_4Chain --------------------
+-------------------- MODULE MC_OpFlushProtocol_4Party --------------------
 (***************************************************************************)
-(* 4-chain OpFlushProtocol (faithful Ridley op:flush; ocapn#11; see       *)
-(* notes/flush-protocols.md §9 and §9.1).  Shortener-initiated:           *)
-(* a peer X that has learned its local RemotePromise resolves to a       *)
-(* third party may fire InitiateFlush; the resolver-holder mints a       *)
-(* fresh p' and replies with desc:import-promise(p').  No probe, no      *)
-(* listener-side flush-ack handshake.                                     *)
+(* Length-3 linear chain under OpFlushProtocol (broader resolver-side      *)
+(* op:flush trigger; ocapn#11; see notes/flush-protocols.md §9 and §9.1).  *)
+(* The OpFlushProtocol parallel of MC_EJavaFlush_4Party: same topology     *)
+(* (4 distinct peers, ChainLength=3, NumMessages=3, EnableRepropagate=     *)
+(* FALSE).  HeadPeer vatA holds the top RemotePromise; the resolution      *)
+(* chain is hosted one ref per peer across vatB -> vatC -> vatD, so every   *)
+(* hop is a distinct wire link (head + 3 hosts = 4 nodes).                  *)
 (*                                                                         *)
-(* Expected: EndToEndRefFIFO_MC violated.  Faithful Ridley does not      *)
-(* preserve FIFO on 4-chain.  See notes/path-changes.md §4.7.            *)
+(* This is the linear-depth probe for the resolver-initiated flush         *)
+(* handshake (op:flush -> op:flush-ack -> op:resolve) with atomic queue/    *)
+(* pending drains.  It is NOT the crossing/simultaneous-shortening case --  *)
+(* that is MC_OpFlushProtocol_TribbleFourWay (EnableRepropagate=TRUE).      *)
+(*                                                                         *)
+(* Reduced from the former 5-peer / ChainLength=4 MC_OpFlushProtocol_4Chain *)
+(* (the canonical Tribble four-way is itself only four-party, so the extra  *)
+(* hop added state-space cost without exercising new structure -- see the   *)
+(* §3.1 / TribbleFourWay discussion).                                       *)
 (***************************************************************************)
 
 EXTENDS TLC, Naturals, Sequences
 
-Peers == {"vatA", "vatB", "vatC", "vatD", "vatE"}
+Peers == {"vatA", "vatB", "vatC", "vatD"}
 HeadPeer == "vatA"
-ChainLength == 4
+ChainLength == 3
 MaxGifts == 3
 MaxRefId == ChainLength + MaxGifts + 6  \* +6 for flush-minted refIds (Ridley)
 NumMessages == 3
@@ -43,7 +51,7 @@ PS == INSTANCE OpFlushProtocol
 
 Init ==
     /\ PS!Init
-    /\ host = <<"vatB", "vatC", "vatD", "vatE">>
+    /\ host = <<"vatB", "vatC", "vatD">>
 
 Next == PS!Next
 

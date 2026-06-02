@@ -1,4 +1,4 @@
---------------- MODULE MC_NaivePromiseResolution_3Chain ---------------
+--------------- MODULE MC_NaivePromiseResolution_3Party ---------------
 (***************************************************************************)
 (* Three-party inter-vat promise-to-promise shortening under              *)
 (* NaivePromiseResolution.  Models §1.2.b's three-party form (Phase B):   *)
@@ -42,7 +42,7 @@
 (* Steps 7 and 8 race at vatC's refs[2].queue: seq=2 (new path) may      *)
 (* enter the queue BEFORE seq=1 (old indirect path) -- EndToEndRefFIFO   *)
 (* violation.  Expected outcome: VIOLATION, dual to                      *)
-(* MC_NaivePromiseResolution_PromiseShorten but with one extra chain hop  *)
+(* MC_NaivePromiseResolution_2Party_PromiseShorten but with one extra chain hop  *)
 (* and three peers.                                                       *)
 (***************************************************************************)
 

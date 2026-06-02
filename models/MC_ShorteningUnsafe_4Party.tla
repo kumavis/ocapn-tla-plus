@@ -1,4 +1,4 @@
-------------------- MODULE MC_ShorteningUnsafe_3Chain -------------------
+------------------- MODULE MC_ShorteningUnsafe_4Party -------------------
 (***************************************************************************)
 (* ChainLength = 3 (two promises + terminal).  Race actor: host[2]        *)
 (* (the only peer that installs a localResolution under terminal-only    *)

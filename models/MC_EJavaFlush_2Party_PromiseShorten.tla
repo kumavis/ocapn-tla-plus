@@ -1,7 +1,7 @@
---------------- MODULE MC_EJavaFlush_3Chain_PromiseShorten ---------------
+--------------- MODULE MC_EJavaFlush_2Party_PromiseShorten ---------------
 (***************************************************************************)
 (* 2-party inter-vat promise-to-promise shortening under EJavaFlush.       *)
-(* Same topology as MC_NaivePromiseResolution_PromiseShorten (Phase A)     *)
+(* Same topology as MC_NaivePromiseResolution_2Party_PromiseShorten (Phase A)     *)
 (* but with the EJavaFlush slow-path embargo + e-flush-probe handshake     *)
 (* extended in Phase C to fire on promise-shaped resolutions               *)
 (* (notes/path-changes.md §3.10).                                          *)
