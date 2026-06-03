@@ -1387,13 +1387,40 @@ ReceiveNetwork ==
                                        \* op:deliver-only landings on this
                                        \* peer.  Required for FIFO; see
                                        \* notes/flush-protocols.md §9.1.
+                                       \* Embargo-via-binder (OpFlush): if the
+                                       \* mirror was redirected to a fresh local
+                                       \* binder LocalPromise on op:flush
+                                       \* receipt, the held sends sit in the
+                                       \* binder's queue (not entry.pending).
+                                       \* Drain that queue and point
+                                       \* localResolution at the real target.
+                                       isBinder ==
+                                           /\ PolicyResolverInitiatedFlush
+                                           /\ entry.localResolution # ResNone
+                                           /\ entry.localResolution.peer = self
+                                           /\ LocalRef(self,
+                                                  entry.localResolution.refId).kind
+                                                  = "LocalPromise"
+                                       binderRef == entry.localResolution.refId
+                                       heldQueue ==
+                                           IF isBinder
+                                           THEN LocalRef(self, binderRef).queue
+                                           ELSE entry.pending
                                        vatsBase ==
-                                           [vats EXCEPT
-                                               ![self].refs[r].localResolution =
-                                                   newLocalRes,
-                                               ![self].refs[r].embargo =
-                                                   entry.embargo \ {from},
-                                               ![self].refs[r].pending = << >>]
+                                           IF isBinder
+                                           THEN [vats EXCEPT
+                                                   ![self].refs[r].localResolution =
+                                                       newLocalRes,
+                                                   ![self].refs[binderRef].queue =
+                                                       << >>,
+                                                   ![self].refs[binderRef].resolution =
+                                                       newLocalRes]
+                                           ELSE [vats EXCEPT
+                                                   ![self].refs[r].localResolution =
+                                                       newLocalRes,
+                                                   ![self].refs[r].embargo =
+                                                       entry.embargo \ {from},
+                                                   ![self].refs[r].pending = << >>]
                                        vatsWithChainBinder ==
                                           IF /\ PolicyClearsChainBinderOnInstall
                                              /\ chainBinderExists
@@ -1407,7 +1434,7 @@ ReceiveNetwork ==
                                            Route(self, newLocalRes.refId)
                                        drainedAfter ==
                                            DrainResolveQueueRec(self, drainRoute,
-                                               entry.pending, ch0,
+                                               heldQueue, ch0,
                                                vatsWithChainBinder, delivered)
                                    IN /\ vats' = drainedAfter.vats
                                       /\ channels' = drainedAfter.channels
@@ -1511,10 +1538,29 @@ ReceiveNetwork ==
                         gid == v.giftId
                         isChain == targetRefId # pw
                         pwFree == ~LocalRefAllocated(self, pw)
+                        \* Embargo-via-binder (OpFlush): the chain ref may
+                        \* already carry a local binder LocalPromise in its
+                        \* localResolution (set on op:flush receipt).  Treat
+                        \* that as bindable too -- the handoff resolves the
+                        \* binder to pw and drains its held queue.
+                        binderActive ==
+                            /\ PolicyResolverInitiatedFlush
+                            /\ targetRefId \in DOMrefs(self)
+                            /\ LocalRef(self, targetRefId).kind = "RemotePromise"
+                            /\ LocalRef(self, targetRefId).localResolution # ResNone
+                            /\ LocalRef(self, targetRefId).localResolution.peer = self
+                            /\ LocalRef(self,
+                                   LocalRef(self, targetRefId).localResolution.refId).kind
+                                   = "LocalPromise"
+                        binderRef ==
+                            IF binderActive
+                            THEN LocalRef(self, targetRefId).localResolution.refId
+                            ELSE pw
                         chainBindable ==
                             /\ targetRefId \in DOMrefs(self)
                             /\ LocalRef(self, targetRefId).kind = "RemotePromise"
-                            /\ LocalRef(self, targetRefId).localResolution = ResNone
+                            /\ \/ LocalRef(self, targetRefId).localResolution = ResNone
+                               \/ binderActive
                         accept ==
                             /\ pwFree
                             /\ (isChain => chainBindable)
@@ -1540,38 +1586,59 @@ ReceiveNetwork ==
                                           chainEntry.resolverRefId)
                     IN
                        /\ (CASE accept /\ isChain
-                                -> /\ vats' =
-                                        [vats EXCEPT
-                                            ![self].refs[pw] =
-                                                MkRemotePromise(
-                                                    tgtHost,
-                                                    pw,
-                                                    ResNone,
-                                                    {},
-                                                    << >>,
-                                                    TRUE,
-                                                    TRUE,
-                                                    FALSE),
-                                            ![self].refs[targetRefId].localResolution =
-                                                ResRef(self, pw),
-                                            \* EJavaFlush slow path adds the
-                                            \* sender (`from`) to the embargo
-                                            \* set; other policies leave the
-                                            \* embargo untouched.
-                                            ![self].refs[targetRefId].embargo =
-                                                IF chainEmbargo
-                                                THEN chainEntry.embargo \cup {from}
-                                                ELSE chainEntry.embargo]
-                                   /\ channels' =
-                                        LET ch1 == AppendToOutbox(ch0, self,
-                                                       tgtHost,
-                                                       OpWithdrawGift(gid,
-                                                           gifter, pw))
-                                        IN IF chainEmbargo
+                                -> LET wireRoute ==
+                                           [tag |-> "wire", peer |-> tgtHost,
+                                            refId |-> pw]
+                                       ch1 ==
+                                           AppendToOutbox(ch0, self, tgtHost,
+                                               OpWithdrawGift(gid, gifter, pw))
+                                       chAfter ==
+                                           IF chainEmbargo
                                            THEN AppendToOutbox(ch1, self,
                                                     chainEntry.resolverPeer,
                                                     chainProbe)
                                            ELSE ch1
+                                       vatsMinted ==
+                                           [vats EXCEPT
+                                               ![self].refs[pw] =
+                                                   MkRemotePromise(
+                                                       tgtHost, pw, ResNone,
+                                                       {}, << >>, TRUE, TRUE,
+                                                       FALSE),
+                                               ![self].refs[targetRefId]
+                                                   .localResolution =
+                                                   ResRef(self, pw),
+                                               \* EJavaFlush slow path adds the
+                                               \* sender (`from`) to the embargo
+                                               \* set; other policies leave it.
+                                               ![self].refs[targetRefId]
+                                                   .embargo =
+                                                   IF chainEmbargo
+                                                   THEN chainEntry.embargo \cup {from}
+                                                   ELSE chainEntry.embargo]
+                                       \* Embargo-via-binder: resolve the binder
+                                       \* to pw and atomically drain its held
+                                       \* queue onto the pw wire route (FIFO-
+                                       \* critical, like the install-branch drain).
+                                       vatsBinder ==
+                                           IF binderActive
+                                           THEN [vatsMinted EXCEPT
+                                                   ![self].refs[binderRef].queue =
+                                                       << >>,
+                                                   ![self].refs[binderRef].resolution =
+                                                       ResRef(self, pw)]
+                                           ELSE vatsMinted
+                                       drained ==
+                                           IF binderActive
+                                           THEN DrainResolveQueueRec(self,
+                                                    wireRoute,
+                                                    LocalRef(self, binderRef).queue,
+                                                    chAfter, vatsBinder, delivered)
+                                           ELSE [vats |-> vatsBinder,
+                                                 channels |-> chAfter,
+                                                 delivered |-> delivered]
+                                   IN /\ vats' = drained.vats
+                                      /\ channels' = drained.channels
                             [] accept /\ ~isChain
                                 -> /\ vats' =
                                         [vats EXCEPT

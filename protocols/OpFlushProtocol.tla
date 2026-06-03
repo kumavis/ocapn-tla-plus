@@ -94,20 +94,36 @@ ReceiveOpFlush ==
               /\ msg.op = "op:flush"
               /\ LET r == msg.targetRefId
                      entry == LocalRef(self, r)
+                     \* Embargo-via-binder (notes/locality-contract.md §2.1):
+                     \* instead of setting a bespoke `embargo` flag, redirect
+                     \* the RemotePromise mirror to a fresh *unresolved local
+                     \* LocalPromise* (the binder).  Route then queues sends
+                     \* through r into the binder's queue by the ordinary
+                     \* unresolved-LocalPromise rule -- no embargo set, no
+                     \* Route "hold" tag, no ProcessHold.  The op:resolve
+                     \* install (Core) drains the binder's queue and points
+                     \* localResolution at the real target.
+                     binderRefId == nextRefId
                      validFlush ==
                          /\ entry # EntryNone
                          /\ entry.kind = "RemotePromise"
+                         /\ entry.localResolution = ResNone
                  IN
                     /\ (CASE validFlush
-                             -> vats' =
+                             -> /\ vats' =
                                     [vats EXCEPT
-                                        ![self].refs[r].embargo =
-                                            entry.embargo \cup {from}]
-                         [] OTHER -> UNCHANGED vats)
+                                        ![self].refs[r].localResolution =
+                                            ResRef(self, binderRefId),
+                                        ![self].refs[binderRefId] =
+                                            MkLocalPromise(<< >>, {}, ResNone,
+                                                {}, FALSE, FALSE, {})]
+                                /\ nextRefId' = nextRefId + 1
+                         [] OTHER -> /\ UNCHANGED vats
+                                     /\ UNCHANGED nextRefId)
                     /\ channels' =
                         AppendToOutbox(ch0, self, from,
                             PR!OpFlushAck(r))
-                    /\ UNCHANGED << host, sent, delivered, nextRefId >>
+                    /\ UNCHANGED << host, sent, delivered >>
                     /\ PR!Mark([name |-> "ReceiveNetwork",
                                 kind |-> "flush",
                                 from |-> from,
