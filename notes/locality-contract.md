@@ -63,54 +63,62 @@ syntactically read the channel, doing so would be a locality violation.
 A peer's only signal that the recipient has acted is an inbound
 protocol message.
 
-### 2.1 Queuing invariant: all message buffering goes through a `LocalPromise`
+### 2.1 Design goal: minimize bespoke embargo logic; lean on `LocalPromise` semantics
 
-**Property (required of every routing policy).** Any place a protocol
-needs to *hold* application messages — an embargo, a flush hold, a
-pre-resolution buffer — must do so by enqueuing them on a
-`LocalPromise.queue` (the host-side promise queue), never in a
-bespoke per-ref buffer. There is exactly one queue abstraction; its
-drain/cascade semantics (`ProcessPending`, `DrainResolveQueueRec`, the
-intra-vat cascade) are the only buffering machinery a policy may rely
-on.
+**Goal (for every routing policy).** Holding application messages
+during a path change should reuse the standard `LocalPromise`
+mechanics — *sends to an unresolved promise queue; installing the
+resolution drains the queue along the new route* — rather than a
+separate, bespoke embargo state machine. The per-ref buffer itself
+(e.g. `RemotePromise.pending`) is **acceptable**; what we want to
+avoid is the *volume of custom embargo logic* layered on top of it:
+the `embargo` set, the `Route` `"hold"` special case, the dedicated
+`ProcessHold` drain action, and the proliferation of embargo-specific
+policy hooks. The fewer of those a policy needs, the closer its hold
+is to "an unresolved promise that drains on resolve."
 
-**Why.** (1) A single queue abstraction means one set of FIFO/drain
-proofs covers every hold site. (2) It forces *pipelineability*: a
-`RemotePromise` never buffers locally, so a holder always either
-forwards on the wire or enqueues at the **promise's host** — including
-handoff withdraw-promises, where the recipient pipelines
-`op:deliver-only` straight to the target host's pre-minted
-`LocalPromise(pw)` immediately after `op:withdraw-gift` (see
-`Unit_Handoff_Pipeline`). (3) It removes a whole class of "two queues
-race each other" bugs.
+**Why.** A bespoke embargo machine duplicates — slightly differently —
+the queue/drain semantics a `LocalPromise` already has, so it doubles
+the proof surface and is a recurring source of ordering bugs (the
+resolve-mid-flush race, the two-queues race). Collapsing it onto the
+promise-resolution path means one drain rule to reason about.
 
-**Current compliance (audit).**
+**Current bespoke-embargo surface (audit).**
 
-| Policy | Listener-side hold mechanism | Compliant? |
-|---|---|---|
-| `NoPromiseResolution` | none (`PolicyRouteHoldsOnEmbargo = FALSE`) | ✅ |
-| `NaivePromiseResolution` | none (installs immediately) | ✅ |
-| `EJavaFlush` | `RemotePromise.pending` + `RemotePromise.embargo`, drained by `ProcessHold`; also chain-embargoes handoff-give (`PolicyChainEmbargoOnHandoffGive = TRUE`) | ❌ |
-| `OpFlushProtocol` | `RemotePromise.pending` + `RemotePromise.embargo`, drained by `ProcessHold` | ❌ |
+| Policy | `embargo` set | `Route` `"hold"` | `ProcessHold` | Embargo policy hooks used |
+|---|---|---|---|---|
+| `NoPromiseResolution` | — | — | — | none |
+| `NaivePromiseResolution` | — | — | — | none (installs immediately) |
+| `EJavaFlush` | yes | yes | yes | `RouteHoldsOnEmbargo`, `EmbargoInsteadOnResolve`, `ChainEmbargoOnHandoffGive`, `EnforcesChainBinderEmbargo`, `ClearsChainBinderOnInstall` |
+| `OpFlushProtocol` | yes | yes | yes | `RouteHoldsOnEmbargo`, `ClearsChainBinderOnInstall` |
 
-So `RemotePromise.pending` / `RemotePromise.embargo` is the one
-mechanism that violates this invariant: `Route` returns a `"hold"`
-tag (Core `Route`, gated by `PolicyRouteHoldsOnEmbargo`) and the
-message is buffered in `refs[r].pending` rather than on a
-`LocalPromise`. Bringing `EJavaFlush` / `OpFlushProtocol` into
-compliance means re-expressing the listener-side embargo as a local
-`LocalPromise` whose queue is drained when the resolution installs,
-and dropping the `pending`/`embargo` fields from `RemotePromise`.
-Tracked as future work.
+So `Naive` / `NoPromise` carry **zero** bespoke embargo logic; the two
+flush policies carry the whole machine. `OpFlushProtocol` is the
+lighter of the two (it sets the embargo on `op:flush` receipt and
+clears it on the `op:resolve` install — close to "unresolved promise →
+resolve drains"); `EJavaFlush` adds the chain-binder and handoff-give
+embargo cases on top.
+
+**What "lean on `LocalPromise`" would look like.** An embargoed
+`RemotePromise` is operationally "a promise whose local resolution
+isn't known yet": sends route into `pending`, and the `op:resolve`
+install drains `pending` along the new route. That is *already* the
+shape of the `op:resolve` install branch — the redundancy is the
+separate `embargo` set + `Route` hold-tag + `ProcessHold` that
+re-implement "queue while unresolved, drain on resolve." Folding the
+hold onto the standard unresolved-promise queue (keeping `pending` as
+that queue) would let `RouteHoldsOnEmbargo` / `ProcessHold` and the
+chain-binder hooks be retired. Feasibility is under investigation; see
+the open question below.
 
 **Handoff pipelineability.** A withdraw-promise `RemotePromise(pw)` is
-pipelineable iff receiving `desc:handoff-give` does **not** set an
-embargo on it — i.e. `PolicyChainEmbargoOnHandoffGive = FALSE`. This
-holds for `OpFlushProtocol` / `Naive` / `NoPromise` (sends route to
-`"wire"` immediately) but **not** for `EJavaFlush`, which chain-
-embargoes handoff promises as part of its faithful `DelayedRedirector`
-hold — another instance of the same `pending`/`embargo` violation
-above.
+pipelineable iff receiving `desc:handoff-give` does **not** embargo it
+(`PolicyChainEmbargoOnHandoffGive = FALSE`). This holds for
+`OpFlushProtocol` / `Naive` / `NoPromise` (sends route to `"wire"`
+immediately, queuing at the target host's pre-minted `LocalPromise(pw)`
+— see `Unit_Handoff_Pipeline`), but **not** for `EJavaFlush`, which
+chain-embargoes handoff promises as part of its faithful
+`DelayedRedirector` hold.
 
 ## 3. Per-action audit
 
