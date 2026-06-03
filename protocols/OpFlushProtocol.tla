@@ -13,13 +13,14 @@
 (* Trigger (broader Ridley reading; see notes/flush-protocols.md §9.1):   *)
 (* whenever this peer resolves a LocalPromise to a value whose host is    *)
 (* a different machine, it fires op:flush to each listener and defers     *)
-(* op:resolve until acks return.  Listeners receiving op:flush embargo    *)
-(* their RemotePromise mirror (PolicyRouteHoldsOnEmbargo = TRUE) so that  *)
-(* cascade-shortcut routing through the resolving ref is held in          *)
-(* pending until the post-flush op:resolve installs the new resolution    *)
-(* AND lifts the embargo, at which point ProcessHold drains pending in    *)
-(* arrival order.  No 3-field shortener-pull op:flush (Ridley's narrow    *)
-(* draft) is needed: the broader trigger fires at the resolver.           *)
+(* op:resolve until acks return.  A listener receiving op:flush redirects *)
+(* its RemotePromise mirror to a fresh *binder LocalPromise* (see         *)
+(* ReceiveOpFlush): cascade-shortcut sends through the resolving ref then *)
+(* queue on the binder by the ordinary unresolved-promise rule, and the   *)
+(* post-flush op:resolve install resolves the binder + drains its queue   *)
+(* along the new route.  No bespoke embargo (no embargo set, Route "hold" *)
+(* tag, or ProcessHold).  No 3-field shortener-pull op:flush (Ridley's    *)
+(* narrow draft) is needed: the broader trigger fires at the resolver.    *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, TLC, References, Network, PeerState
@@ -38,13 +39,12 @@ VARIABLES channels, host, vats, sent, delivered, nextRefId, lastAction
 
 ----------------------------------------------------------------------------
 (* Policy hook implementations: OpFlushProtocol (broader-trigger op:flush).
-   - InstallNow: every op:resolve installs immediately (the embargo set
-     by an earlier op:flush is cleared by Core's existing install branch
-     via `entry.embargo \ {from}`).
-   - EmbargoInstead: never (we don't gate install on op:resolve; the
-     embargo is set on op:flush receipt instead).
-   - Route hold check fires on non-empty embargo (the post-flush hold
-     window at the listener).
+   - InstallNow: every op:resolve installs immediately.
+   - EmbargoInstead: never.
+   - Route hold OFF (PolicyRouteHoldsOnEmbargo = FALSE): the listener
+     hold is modelled as a binder LocalPromise (see ReceiveOpFlush), so
+     held sends queue on the binder by the ordinary unresolved-promise
+     rule -- no `embargo` set, no Route "hold" tag, no ProcessHold.
    - Promise-shorten 2-party + 3-party emission is ON: under the
      broader trigger, the resolver fires op:flush for any resolution
      whose target host is a different peer, target-shaped or
@@ -60,7 +60,7 @@ PolicyEmbargoInsteadOnResolve(isHandoffPwTarget, fastPath) ==
 PolicyEnforcesChainBinderEmbargo == FALSE
 PolicyClearsChainBinderOnInstall == TRUE
 PolicyHasListeners == TRUE
-PolicyRouteHoldsOnEmbargo == TRUE
+PolicyRouteHoldsOnEmbargo == FALSE
 PolicyEmitsPromiseShortenNotify == TRUE
 PolicyEmitsPromiseShorten3PartyNotify == TRUE
 PolicyEmitsOpResolveOnTarget == TRUE
@@ -76,15 +76,16 @@ PR == INSTANCE Core
 
    ReceiveOpFlush: listener side.  When peer L receives op:flush(r) from
    resolver R, L:
-     1. Adds R to L's RemotePromise mirror embargo set (refs[r].embargo).
-        While embargo is non-empty, Route on L returns "hold" for any
-        send routed through this ref -- the message is queued in
-        refs[r].pending instead of being forwarded on the wire.
+     1. Mints a fresh unresolved local LocalPromise (the binder) and
+        points refs[r].localResolution at it.  Route on L then queues
+        any send through r onto the binder's queue by the ordinary
+        unresolved-LocalPromise rule (no embargo, no "hold" tag).
      2. Acks back to R.
 
-   The embargo is cleared by Core's op:resolve receive branch on
-   install (`entry.embargo \ {from}` removes R from the set when R's
-   op:resolve later arrives).  ProcessHold then drains pending. *)
+   Core's op:resolve receive branch resolves the binder to the real
+   target (and drains its queue along the new route) when R's op:resolve
+   later arrives -- the install branch for direct targets/promises, the
+   handoff-give branch for the 3-party case. *)
 ReceiveOpFlush ==
     \E self, from \in Peers :
         /\ InboxNonEmpty(self, from)
@@ -188,44 +189,6 @@ ReceiveOpFlushAck ==
                                 refId |-> r,
                                 wakeup |-> wakeup])
 
-----------------------------------------------------------------------------
-(* ProcessHold: drain one message from refs[r].pending whose embargo
-   has been lifted.  Identical in shape to the EJavaFlush ProcessHold
-   (only the trigger for setting embargo differs); duplicated here so
-   OpFlushProtocol's Next composes the action directly without
-   reaching into a sibling policy module. *)
-ProcessHold ==
-    \E self \in Peers : \E r \in DOMrefs(self) :
-        /\ LocalRef(self, r).kind = "RemotePromise"
-        /\ LocalRef(self, r).embargo = {}
-        /\ Len(LocalRef(self, r).pending) > 0
-        /\ LET entry == LocalRef(self, r)
-               msg == Head(entry.pending)
-               restPending == Tail(entry.pending)
-               route ==
-                   IF entry.localResolution # ResNone
-                   THEN PR!Route(self, entry.localResolution.refId)
-                   ELSE [tag |-> "wire",
-                         peer |-> entry.resolverPeer,
-                         refId |-> entry.resolverRefId]
-               vatsSrc == [vats EXCEPT ![self].refs[r].pending = restPending]
-               after == PR!ApplyRoute(self, route, msg, channels, vatsSrc, delivered)
-           IN
-              /\ route.tag \in {"deliver", "wire", "queue"}
-              /\ channels' = after.channels
-              /\ vats' = after.vats
-              /\ delivered' = after.delivered
-              /\ UNCHANGED << host, sent >>
-              /\ PR!HandoffVarsUnchanged
-              /\ PR!Mark([name |-> "ProcessHold",
-                          actor |-> self,
-                          refId |-> r,
-                          tag |-> route.tag,
-                          op |-> msg.op,
-                          seq |-> IF "seq" \in DOMAIN msg
-                                  THEN msg.seq
-                                  ELSE 0])
-
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
 ----------------------------------------------------------------------------
@@ -237,12 +200,10 @@ Next ==
     \/ PR!Next
     \/ ReceiveOpFlush
     \/ ReceiveOpFlushAck
-    \/ ProcessHold
 Fairness ==
     /\ PR!Fairness
     /\ WF_vars(ReceiveOpFlush)
     /\ WF_vars(ReceiveOpFlushAck)
-    /\ WF_vars(ProcessHold)
 Spec == Init /\ [][Next]_vars /\ Fairness
 TypeOK == PR!TypeOK
 EndToEndRefFIFO == PR!EndToEndRefFIFO

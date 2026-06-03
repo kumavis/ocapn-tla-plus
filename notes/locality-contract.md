@@ -90,26 +90,27 @@ promise-resolution path means one drain rule to reason about.
 | `NoPromiseResolution` | — | — | — | none |
 | `NaivePromiseResolution` | — | — | — | none (installs immediately) |
 | `EJavaFlush` | yes | yes | yes | `RouteHoldsOnEmbargo`, `EmbargoInsteadOnResolve`, `ChainEmbargoOnHandoffGive`, `EnforcesChainBinderEmbargo`, `ClearsChainBinderOnInstall` |
-| `OpFlushProtocol` | yes | yes | yes | `RouteHoldsOnEmbargo`, `ClearsChainBinderOnInstall` |
+| `OpFlushProtocol` | — | — | — | none active (binder LocalPromise) |
 
-So `Naive` / `NoPromise` carry **zero** bespoke embargo logic; the two
-flush policies carry the whole machine. `OpFlushProtocol` is the
-lighter of the two (it sets the embargo on `op:flush` receipt and
-clears it on the `op:resolve` install — close to "unresolved promise →
-resolve drains"); `EJavaFlush` adds the chain-binder and handoff-give
-embargo cases on top.
+So `Naive` / `NoPromise` carry **zero** bespoke embargo logic, and
+`OpFlushProtocol` now also carries none active: its listener hold is a
+**binder `LocalPromise`** (below). `EJavaFlush` still carries the whole
+machine (faithful `DelayedRedirector`).
 
-**What "lean on `LocalPromise`" would look like.** An embargoed
-`RemotePromise` is operationally "a promise whose local resolution
-isn't known yet": sends route into `pending`, and the `op:resolve`
-install drains `pending` along the new route. That is *already* the
-shape of the `op:resolve` install branch — the redundancy is the
-separate `embargo` set + `Route` hold-tag + `ProcessHold` that
-re-implement "queue while unresolved, drain on resolve." Folding the
-hold onto the standard unresolved-promise queue (keeping `pending` as
-that queue) would let `RouteHoldsOnEmbargo` / `ProcessHold` and the
-chain-binder hooks be retired. Feasibility is under investigation; see
-the open question below.
+**`OpFlushProtocol`: embargo modelled as a binder `LocalPromise`
+(done).** On `op:flush` receipt the listener mints a fresh unresolved
+local `LocalPromise` and points the `RemotePromise` mirror's
+`localResolution` at it; `Route` then queues sends onto the binder by
+the ordinary unresolved-`LocalPromise` rule. The `op:resolve` install
+(direct targets/promises) and the handoff-give branch (3-party) resolve
+the binder to the real target and atomically drain its queue along the
+new route. No `embargo` set, no `Route` `"hold"` tag, no `ProcessHold`
+(removed from OpFlush; `PolicyRouteHoldsOnEmbargo = FALSE`). Verified
+behaviorally equivalent — full suite 35/35, OpFlush outcomes identical
+to the pre-binder baseline (2/3-party `PromiseShorten` + Tribble pass,
+`4Party` still violates). The `embargo` / `pending` fields remain on
+`RemotePromise` only for `EJavaFlush`. Converting `EJavaFlush` the same
+way (more faithful to e-on-java's `p_new`) is tracked future work.
 
 **Handoff pipelineability.** A withdraw-promise `RemotePromise(pw)` is
 pipelineable iff receiving `desc:handoff-give` does **not** embargo it
