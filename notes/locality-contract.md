@@ -63,6 +63,55 @@ syntactically read the channel, doing so would be a locality violation.
 A peer's only signal that the recipient has acted is an inbound
 protocol message.
 
+### 2.1 Queuing invariant: all message buffering goes through a `LocalPromise`
+
+**Property (required of every routing policy).** Any place a protocol
+needs to *hold* application messages — an embargo, a flush hold, a
+pre-resolution buffer — must do so by enqueuing them on a
+`LocalPromise.queue` (the host-side promise queue), never in a
+bespoke per-ref buffer. There is exactly one queue abstraction; its
+drain/cascade semantics (`ProcessPending`, `DrainResolveQueueRec`, the
+intra-vat cascade) are the only buffering machinery a policy may rely
+on.
+
+**Why.** (1) A single queue abstraction means one set of FIFO/drain
+proofs covers every hold site. (2) It forces *pipelineability*: a
+`RemotePromise` never buffers locally, so a holder always either
+forwards on the wire or enqueues at the **promise's host** — including
+handoff withdraw-promises, where the recipient pipelines
+`op:deliver-only` straight to the target host's pre-minted
+`LocalPromise(pw)` immediately after `op:withdraw-gift` (see
+`Unit_Handoff_Pipeline`). (3) It removes a whole class of "two queues
+race each other" bugs.
+
+**Current compliance (audit).**
+
+| Policy | Listener-side hold mechanism | Compliant? |
+|---|---|---|
+| `NoPromiseResolution` | none (`PolicyRouteHoldsOnEmbargo = FALSE`) | ✅ |
+| `NaivePromiseResolution` | none (installs immediately) | ✅ |
+| `EJavaFlush` | `RemotePromise.pending` + `RemotePromise.embargo`, drained by `ProcessHold`; also chain-embargoes handoff-give (`PolicyChainEmbargoOnHandoffGive = TRUE`) | ❌ |
+| `OpFlushProtocol` | `RemotePromise.pending` + `RemotePromise.embargo`, drained by `ProcessHold` | ❌ |
+
+So `RemotePromise.pending` / `RemotePromise.embargo` is the one
+mechanism that violates this invariant: `Route` returns a `"hold"`
+tag (Core `Route`, gated by `PolicyRouteHoldsOnEmbargo`) and the
+message is buffered in `refs[r].pending` rather than on a
+`LocalPromise`. Bringing `EJavaFlush` / `OpFlushProtocol` into
+compliance means re-expressing the listener-side embargo as a local
+`LocalPromise` whose queue is drained when the resolution installs,
+and dropping the `pending`/`embargo` fields from `RemotePromise`.
+Tracked as future work.
+
+**Handoff pipelineability.** A withdraw-promise `RemotePromise(pw)` is
+pipelineable iff receiving `desc:handoff-give` does **not** set an
+embargo on it — i.e. `PolicyChainEmbargoOnHandoffGive = FALSE`. This
+holds for `OpFlushProtocol` / `Naive` / `NoPromise` (sends route to
+`"wire"` immediately) but **not** for `EJavaFlush`, which chain-
+embargoes handoff promises as part of its faithful `DelayedRedirector`
+hold — another instance of the same `pending`/`embargo` violation
+above.
+
 ## 3. Per-action audit
 
 The acting peer for each action — the peer whose state mutates and
