@@ -792,9 +792,14 @@ The complete `OpFlushProtocol` design now consists of:
 1. **Broader trigger** (resolver-side). Fires when the resolver
    resolves a `LocalPromise` to any value (target or promise) on a
    different machine.
-2. **Listener-side embargo on `op:flush` receive.** Combined with
-   `PolicyRouteHoldsOnEmbargo = TRUE`, this holds future sends
-   routed through the embargoed `RemotePromise` mirror.
+2. **Listener-side hold as a binder `LocalPromise`** on `op:flush`
+   receive. The listener redirects its `RemotePromise` mirror's
+   `localResolution` to a fresh unresolved binder `LocalPromise`;
+   future sends then queue on the binder by the ordinary
+   unresolved-promise rule — no bespoke `embargo` set, `Route` `"hold"`
+   tag, or `ProcessHold` (`PolicyRouteHoldsOnEmbargo = FALSE`). The
+   `op:resolve` install resolves the binder and drains its queue. See
+   `notes/locality-contract.md` §2.1.
 3. **Atomic resolver-side queue drain** in `ResolverResolve` (both
    the flush branch and the immediate-notify branch under
    `PolicyResolverInitiatedFlush`).
@@ -810,6 +815,42 @@ The complete `OpFlushProtocol` design now consists of:
 Each piece addresses a specific FIFO hazard; together they
 mechanically eliminate the path-changes-racing-in-flight traffic
 class of failures.
+
+#### Closing the 4-party linear violation: explored and rejected
+
+`MC_OpFlushProtocol_4Party` still violates `EndToEndRefFIFO`, and the
+violation is a **cross-channel convergence race**: the earlier message
+(eagerly forwarded down the chain at resolve time) and the later
+message (sent by the head after it switches to the shortened path)
+reach a convergence node on **two different inbound channels**, which
+per-session FIFO cannot order. Several resolver/listener-side tweaks
+were prototyped and do **not** close it:
+
+- **Defer the resolution install + queue drain to flush-ack.**
+  Regresses the *2-party* case: removing the atomic drain reintroduces
+  the "queue drain is non-optional" race above — a later, locally-held
+  (binder) message folds into the downstream queue *ahead* of an
+  earlier message still completing its A→B→A round-trip. Does not fix
+  4-party either.
+- **Defer only the post-flush resolution *notification*.** This is
+  already the baseline (`ResolverResolve` sets `notified = FALSE` under
+  a flush; `ReceiveOpFlushAck` emits the `op:resolve` at ack time). No
+  change to make; 4-party still violates.
+- **Notify the listener with the *deeper-known* resolution** (so it
+  shortcuts straight to the terminal host instead of the next hop). The
+  correct mechanism is `RepropagatePromiseShorten` (valid descriptors;
+  a naive value-chase instead produces an invalid descriptor →
+  `Route` `deadEnd`). Enabling re-propagation on the 4-party chain
+  still **violates** (≈14k states, nm=2): a deeper resolution only
+  *moves* the convergence point (e.g. vatC → vatD), it never removes
+  it.
+
+Conclusion: no resolver-side resolution choice closes this. Eliminating
+it requires an **end-to-end / terminal-confirmed barrier** — the
+listener must not commit the shortened path until the long-path traffic
+has drained at the convergence/terminal node — or not shortening at
+all. Tracked as future work; the per-link `OpFlushProtocol` design
+above is the landing state.
 
 ### 9.2 Implementation in this spec
 
