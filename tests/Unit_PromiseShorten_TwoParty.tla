@@ -22,8 +22,8 @@
 (*   - WireDescTag(vatB, vatA, vatA, "RemotePromise") = "export-promise"  *)
 (*     (capHost = receiver = vatA, kind not in target set).                *)
 (*                                                                         *)
-(* Under RoutingPolicy = "NaivePromiseResolution", firePromiseShorten is  *)
-(* TRUE on the very first ResolverResolve step at r=1, and the resulting *)
+(* Under the NaivePromiseResolution policy, firePromiseShorten is TRUE on *)
+(* the very first ResolverResolve step at r=1, and the resulting          *)
 (* op:resolve(1, desc:export-promise(2)) lands on channels[vatB][vatA].   *)
 (*                                                                         *)
 (* The invariant NoExportPromiseEmitted_MC is the negation of that wire   *)
@@ -48,8 +48,9 @@ EnableDynamicListen == FALSE
 EnableHandoff == FALSE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
+EnableShorten == FALSE
 MaxGifts == 0
-RoutingPolicy == "NaivePromiseResolution"
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -63,7 +64,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE NaivePromiseResolution
 
 Init ==
     /\ PS!Init
@@ -79,7 +80,7 @@ NoMessageLost_MC == PS!NoMessageLost
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 EventualDelivery_MC == PS!EventualDelivery
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 (* The witness: vatB's ResolverResolve at r=1 MUST append
    op:resolve(targetRefId=1, desc:export-promise(refId=2)) on

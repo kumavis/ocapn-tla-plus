@@ -21,8 +21,9 @@ EnableDynamicListen == FALSE
 EnableHandoff == FALSE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
+EnableShorten == FALSE
 MaxGifts == 0
-RoutingPolicy == "NoPromiseResolution"
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -36,7 +37,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE NoPromiseResolution
 
 Init ==
     /\ PS!Init

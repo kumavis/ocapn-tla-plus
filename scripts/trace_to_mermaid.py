@@ -176,50 +176,82 @@ def _grp(pat: str, msg: str, default: str = "?") -> str:
 
 
 def summarize_msg(msg: str) -> str:
-    op = _grp(r'op\s*\|\->\s*"([^"]*)"', msg)
+    op_pat = r'op\s*\|\->\s*"([^"]*)"'
+    seq_pat = r'seq\s*\|\->\s*(\d+)'
+    sor_pat = r'sentOnRef\s*\|\->\s*(\d+)'
+    rid_pat = r'refId\s*\|\->\s*(\d+)'
+    tri_pat = r'targetRefId\s*\|\->\s*(\d+)'
+    desc_pat = r'desc\s*\|\->\s*"([^"]*)"'
+    gifter_pat = r'gifter\s*\|\->\s*"([^"]*)"'
+    targethost_pat = r'targetHost\s*\|\->\s*"([^"]*)"'
+    giftid_pat = r'giftId\s*\|\->\s*(\d+)'
+    pw_pat = r'pw\s*\|\->\s*(\d+)'
+    recipient_pat = r'recipient\s*\|\->\s*"([^"]*)"'
+    tlri_pat = r'targetLocalRefId\s*\|\->\s*(\d+)'
+    wpr_pat = r'withdrawPromiseRefId\s*\|\->\s*(\d+)'
+    answer_pat = r'answerPos\s*\|\->\s*(\d+)'
+    rmd_pat = r'resolveMeRefId\s*\|\->\s*(\d+)'
+    tdr_pat = r'toDescRefId\s*\|\->\s*(\d+)'
+
+    op = _grp(op_pat, msg)
     if op == "op:deliver-only":
-        return (
-            f'op:deliver-only(seq={_grp(r"seq\s*\|\->\s*(\d+)", msg)}, '
-            f'sentOnRef={_grp(r"sentOnRef\s*\|\->\s*(\d+)", msg)}, '
-            f'refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)})'
-        )
+        seq = _grp(seq_pat, msg)
+        sor = _grp(sor_pat, msg)
+        rid = _grp(rid_pat, msg)
+        return f'op:deliver-only(seq={seq}, sentOnRef={sor}, refId={rid})'
     if op == "op:resolve":
-        target = _grp(r"targetRefId\s*\|\->\s*(\d+)", msg)
-        desc = _grp(r'desc\s*\|\->\s*"([^"]*)"', msg)
+        target = _grp(tri_pat, msg)
+        desc = _grp(desc_pat, msg)
         if desc in ("desc:import-target", "desc:export-target",
-                    "desc:import-promise", "desc:export-promise"):
-            return (
-                f'op:resolve(targetRefId={target}, {desc}'
-                f'(refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)}))'
-            )
+                    "desc:import-promise", "desc:export-promise",
+                    "desc:import-object"):
+            rid = _grp(rid_pat, msg)
+            return f'op:resolve(targetRefId={target}, {desc}(refId={rid}))'
         if desc == "desc:handoff-give":
+            gifter = _grp(gifter_pat, msg)
+            th = _grp(targethost_pat, msg)
+            gid = _grp(giftid_pat, msg)
+            pw = _grp(pw_pat, msg)
             return (
                 f'op:resolve(targetRefId={target}, desc:handoff-give'
-                f'(gifter={_grp(r"gifter\s*\|\->\s*\"([^\"]*)\"", msg)}, '
-                f'targetHost={_grp(r"targetHost\s*\|\->\s*\"([^\"]*)\"", msg)}, '
-                f'giftId={_grp(r"giftId\s*\|\->\s*(\d+)", msg)}, '
-                f'pw={_grp(r"pw\s*\|\->\s*(\d+)", msg)}))'
+                f'(gifter={gifter}, targetHost={th}, giftId={gid}, pw={pw}))'
             )
         return f'op:resolve(targetRefId={target})'
     if op == "op:flush":
-        return f'op:flush(refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)})'
+        # OpFlushProtocol's broader-trigger op:flush carries targetRefId
+        # only.  Earlier drafts used the 3-field Ridley shape (toDescRefId
+        # /answerPos/resolveMeRefId); keep it as a fallback so historical
+        # logs still render.
+        target = _grp(tri_pat, msg, "")
+        if target:
+            return f'op:flush(targetRefId={target})'
+        td = _grp(tdr_pat, msg)
+        ap = _grp(answer_pat, msg)
+        rm = _grp(rmd_pat, msg)
+        return f'op:flush(toDescRefId={td}, answerPos={ap}, resolveMeRefId={rm})'
     if op == "op:flush-ack":
-        return f'op:flush-ack(refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)})'
+        target = _grp(tri_pat, msg, "")
+        if target:
+            return f'op:flush-ack(targetRefId={target})'
+        rid = _grp(rid_pat, msg)
+        return f'op:flush-ack(refId={rid})'
     if op == "op:listen":
-        return f'op:listen(refId={_grp(r"refId\s*\|\->\s*(\d+)", msg)})'
+        rid = _grp(rid_pat, msg)
+        return f'op:listen(refId={rid})'
     if op == "op:deposit-gift":
+        gid = _grp(giftid_pat, msg)
+        rcp = _grp(recipient_pat, msg)
+        tlri = _grp(tlri_pat, msg)
+        pw = _grp(pw_pat, msg)
         return (
-            f'op:deposit-gift(giftId={_grp(r"giftId\s*\|\->\s*(\d+)", msg)}, '
-            f'recipient={_grp(r"recipient\s*\|\->\s*\"([^\"]*)\"", msg)}, '
-            f'targetLocalRefId={_grp(r"targetLocalRefId\s*\|\->\s*(\d+)", msg)}, '
-            f'pw={_grp(r"pw\s*\|\->\s*(\d+)", msg)})'
+            f'op:deposit-gift(giftId={gid}, recipient={rcp}, '
+            f'targetLocalRefId={tlri}, pw={pw})'
         )
     if op == "op:withdraw-gift":
-        return (
-            f'op:withdraw-gift(giftId={_grp(r"giftId\s*\|\->\s*(\d+)", msg)}, '
-            f'gifter={_grp(r"gifter\s*\|\->\s*\"([^\"]*)\"", msg)}, '
-            f'pw={_grp(r"withdrawPromiseRefId\s*\|\->\s*(\d+)", msg)})'
-        )
+        gid = _grp(giftid_pat, msg)
+        gifter = _grp(gifter_pat, msg)
+        pw = _grp(wpr_pat, msg)
+        return f'op:withdraw-gift(giftId={gid}, gifter={gifter}, pw={pw})'
     return op
 
 
@@ -291,6 +323,86 @@ def extract_delivered_seq_order(block: str) -> list[int]:
     return [int(x) for x in re.findall(r"seq\s*\|\->\s*(\d+)", inner)]
 
 
+def extract_host_map(block: str) -> list[str]:
+    """Parse the `/\\ host = <<"vatB", "vatA", "vatB">>` line into a list
+    indexed by refId 1..N.  Returns []  if no `host` field is present."""
+    m = re.search(r"/\\ host[ \t]*=[ \t]*<<([\s\S]*?)>>", block)
+    if not m:
+        return []
+    return re.findall(r'"([^"]+)"', m.group(1))
+
+
+def chain_path_summary(block: str) -> str:
+    """Build a one-line `r1@vatB → r2@vatA(LP→r3) → r3@vatB(LT)`-style
+    chain summary from the Init state.  Each refId shows host and entry
+    kind tag (LT=LocalTarget, LP=LocalPromise) and -- when LocalPromise
+    has an initial resolution -- the next hop."""
+    host = extract_host_map(block)
+    if not host:
+        return ""
+    # Pull each peer's refs slice; pluck kind + (if LocalPromise) resolution.
+    # The refs sequence is `<< [...], [...], ... >>`, but the entries can
+    # contain nested `<<>>` (pending / queue), so we walk the `<<...>>`
+    # with depth counting rather than non-greedy regex.
+    refs_by_peer: dict[str, list[dict[str, str]]] = {}
+    for pm in re.finditer(r'(\w+)\s*\|\->\s*\[\s*refs\s*\|\->\s*<<', block):
+        peer = pm.group(1)
+        j = pm.end()
+        ang = 1
+        n = len(block)
+        while j < n and ang > 0:
+            if block.startswith("<<", j):
+                ang += 1
+                j += 2
+            elif block.startswith(">>", j):
+                ang -= 1
+                if ang == 0:
+                    break
+                j += 2
+            else:
+                j += 1
+        refs_blob = block[pm.end():j]
+        entries: list[dict[str, str]] = []
+        depth = 0
+        start = -1
+        for i, c in enumerate(refs_blob):
+            if c == '[':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif c == ']':
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    body = refs_blob[start:i + 1]
+                    e: dict[str, str] = {}
+                    km = re.search(r'kind\s*\|\->\s*"([^"]+)"', body)
+                    if km:
+                        e['kind'] = km.group(1)
+                    rm = re.search(
+                        r'resolution\s*\|\->\s*\[kind\s*\|\->\s*"ref"\s*,'
+                        r'\s*peer\s*\|\->\s*"([^"]+)"\s*,\s*refId\s*\|\->\s*(\d+)\]',
+                        body)
+                    if rm:
+                        e['res_peer'] = rm.group(1)
+                        e['res_refId'] = rm.group(2)
+                    entries.append(e)
+                    start = -1
+        refs_by_peer[peer] = entries
+    short = {'LocalTarget': 'LT', 'LocalPromise': 'LP',
+             'RemoteTarget': 'RT', 'RemotePromise': 'RP'}
+    parts: list[str] = []
+    for idx, h in enumerate(host, start=1):
+        entries = refs_by_peer.get(h, [])
+        e = entries[idx - 1] if idx - 1 < len(entries) else {}
+        kind = e.get('kind', '?')
+        tag = short.get(kind, kind)
+        suffix = ''
+        if 'res_peer' in e and 'res_refId' in e:
+            suffix = f'→{e["res_peer"]}:r{e["res_refId"]}'
+        parts.append(f'r{idx}@{h}({tag}{suffix})')
+    return ' → '.join(parts)
+
+
 def collect_peers(matrix: dict[str, dict[str, list[str]]]) -> set[str]:
     ps: set[str] = set()
     for f, tm in matrix.items():
@@ -327,6 +439,12 @@ class ActionNote:
     actors: tuple[str, ...]   # 1 or 2 actors for `Note over A` / `Note over A,B`
     body: str                 # human-readable body (no leading `[s..]`)
     short: str                # compact label for SVG (one or two words)
+    delivers_at: Optional[str] = None
+    """If non-None, this step appends to `delivered` at this peer.  The SVG
+    renders a delivery-sink marker on that peer's column at this step.
+    Covers both `deliver-terminal` (msg directly received at a LocalTarget)
+    and `forward-deliver` (msg routed via cascade to a LocalTarget on the
+    receiver; same end-state, no wire send out)."""
 
 
 def action_note_from_fields(fields: dict[str, str]) -> ActionNote | None:
@@ -396,7 +514,8 @@ def action_note_from_fields(fields: dict[str, str]) -> ActionNote | None:
                 (to,),
                 f"ReceiveNetwork deliver-terminal {fro}->{to} "
                 f"seq={g('seq')} refId={g('refId')} (LocalTarget sink)",
-                f"Recv seq={g('seq')} → delivered",
+                f"Deliver seq={g('seq')} r={g('refId')}",
+                delivers_at=to,
             )
         if kind == "enqueue-pending":
             return ActionNote(
@@ -405,7 +524,16 @@ def action_note_from_fields(fields: dict[str, str]) -> ActionNote | None:
                 f"refId={g('refId')} (LocalPromise.queue)",
                 f"Recv seq={g('seq')} → queue",
             )
-        if kind in ("forward-deliver", "forward-wire", "forward-queue",
+        if kind == "forward-deliver":
+            return ActionNote(
+                (to,),
+                f"ReceiveNetwork forward-deliver {fro}->{to} "
+                f"seq={g('seq')} refId={g('refId')} "
+                f"(cascade via r={g('refId')} → LocalTarget on {to})",
+                f"Deliver seq={g('seq')} (via r={g('refId')})",
+                delivers_at=to,
+            )
+        if kind in ("forward-wire", "forward-queue",
                     "forward-remote", "forward-remote-deliver",
                     "forward-remote-queue", "forward-remote-hold",
                     "forward-remote-target"):
@@ -630,7 +758,10 @@ def ingest(log: str):
             ))
 
     delivered = extract_delivered_seq_order(parts[-1]) if parts else []
-    return step_infos, sorted(all_peers), matched, delivered
+    # Initial state (parts[0] is the preamble before "State 1:"; parts[1] is
+    # State 1 if present).  Parse the chain summary from State 1.
+    chain = chain_path_summary(parts[1]) if len(parts) > 1 else ""
+    return step_infos, sorted(all_peers), matched, delivered, chain
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +772,8 @@ def ingest(log: str):
 def emit_mermaid(step_infos: list[StepInfo],
                  peers: list[str],
                  matched: list[MatchedMessage],
-                 delivered: list[int]) -> str:
+                 delivered: list[int],
+                 chain: str = "") -> str:
     """Build the mermaid sequenceDiagram (string with leading/trailing ```)."""
     # Index recv_step per (send_step, msg_raw_summary, from, to) so each
     # enqueue arrow can show its later dequeue step.
@@ -657,6 +789,11 @@ def emit_mermaid(step_infos: list[StepInfo],
     if not peers:
         lines.append("    Note over TLC: no channels in log")
     elif len(peers) >= 2:
+        if chain:
+            lines.append(
+                f"    Note over {esc(peers[0])},{esc(peers[-1])}: "
+                f"Chain: {esc_label(chain)}"
+            )
         lines.append(
             f"    Note over {esc(peers[0])},{esc(peers[-1])}: "
             "TLC step `[sN]` is the BFS state index. "
@@ -760,7 +897,8 @@ def xml_escape(s: str) -> str:
 def emit_svg(step_infos: list[StepInfo],
              peers: list[str],
              matched: list[MatchedMessage],
-             delivered: list[int]) -> str:
+             delivered: list[int],
+             chain: str = "") -> str:
     if not peers or not step_infos:
         return ('<?xml version="1.0" encoding="UTF-8"?>\n'
                 '<svg xmlns="http://www.w3.org/2000/svg" width="200" '
@@ -770,10 +908,10 @@ def emit_svg(step_infos: list[StepInfo],
     n_peers = len(peers)
     n_steps = len(step_infos)
 
-    # Layout
+    # Layout: add an extra header row when we have a chain summary to draw.
     margin_left = 80
     margin_right = 40
-    margin_top = 80
+    margin_top = 80 + (16 if chain else 0)
     margin_bottom = 60
     col_width = 180
     row_height = 34
@@ -820,8 +958,19 @@ def emit_svg(step_infos: list[StepInfo],
         f'<text x="{margin_left}" y="40" font-size="10" fill="#666">'
         'Solid = matched send/receive. Dashed = still in-flight at trace end.'
         ' Slope ≈ transit (more steps = steeper).'
+        ' Filled square on a peer column = terminal delivery (msg appended'
+        ' to `delivered` at that peer).'
         '</text>'
     )
+
+    # Chain path summary, if the initial state had a `host` map we could
+    # parse.  Sits just below the header text and above the peer columns.
+    if chain:
+        parts.append(
+            f'<text x="{margin_left}" y="56" font-size="10" fill="#555">'
+            f'Chain: {xml_escape(chain)}'
+            '</text>'
+        )
 
     # Peer columns + labels
     for p in peers:
@@ -858,6 +1007,18 @@ def emit_svg(step_infos: list[StepInfo],
             f'<text x="{x}" y="{y}" font-size="9" fill="#555">'
             f'{xml_escape(si.note.short)}</text>'
         )
+        # Terminal delivery sink: a filled square on the receiver's column
+        # marks the step at which a seq lands in `delivered`.  Covers both
+        # deliver-terminal (direct LocalTarget receive) and forward-deliver
+        # (cascade via LocalPromise resolution to a LocalTarget on `to`).
+        if si.note.delivers_at and si.note.delivers_at in peer_x:
+            cx = peer_x[si.note.delivers_at]
+            cy = step_y[si.step]
+            color = SVG_COLORS["deliver"]
+            parts.append(
+                f'<rect x="{cx - 4}" y="{cy - 4}" width="8" height="8" '
+                f'fill="{color}" stroke="white" stroke-width="1"/>'
+            )
 
     # Diagonal arrows for each matched message
     for m in matched:
@@ -970,9 +1131,9 @@ def main():
     args = ap.parse_args()
 
     log = sys.stdin.read()
-    step_infos, peers, matched, delivered = ingest(log)
+    step_infos, peers, matched, delivered, chain = ingest(log)
 
-    md = emit_mermaid(step_infos, peers, matched, delivered)
+    md = emit_mermaid(step_infos, peers, matched, delivered, chain)
     print(md)
     if not step_infos and not peers:
         print("<!-- trace-to-mermaid: no channel or lastAction steps -->",
@@ -981,7 +1142,7 @@ def main():
     if args.svg:
         try:
             with open(args.svg, "w", encoding="utf-8") as f:
-                f.write(emit_svg(step_infos, peers, matched, delivered))
+                f.write(emit_svg(step_infos, peers, matched, delivered, chain))
         except OSError as e:
             print(f"warning: could not write SVG to {args.svg}: {e}",
                   file=sys.stderr)

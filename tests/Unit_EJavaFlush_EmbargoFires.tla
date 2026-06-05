@@ -82,7 +82,8 @@ EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
-RoutingPolicy == "EJavaFlush"
+EnableShorten == FALSE
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -96,7 +97,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE EJavaFlush
 
 Init ==
     /\ host = <<"vatB", "vatC", "vatA">>
@@ -109,15 +110,28 @@ Init ==
                           \* notified of resolution to (vatC, 2).  fresh =
                           \* FALSE because the pre-staged op:deliver-only
                           \* below was sent by vatA through this ref.
-                          PS!MkRemotePromise("vatB", 1,
+                          PS!MkRemotePromise(
+                              "vatB",
+                              1,
                               PS!ResRef("vatC", 2),
-                              FALSE, << >>, TRUE, FALSE)
+                              {},
+                              << >>,
+                              TRUE,
+                              FALSE,
+                              FALSE)
                     [] p = "vatA" /\ r = 2 ->
                             \* vatA's view of p2; resolver vatC.  Not yet
                             \* notified locally (vatA is not a listener in
                             \* this staged scenario).
-                            PS!MkRemotePromise("vatC", 2, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatC",
+                                2,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatA" /\ r = 3 ->
                             \* The terminal target on the head peer.
                             PS!MkLocalTarget
@@ -125,8 +139,14 @@ Init ==
                             \* p1 on vatB, already resolved to (vatC, 2) and
                             \* listener {vatA} already notified.  Marking
                             \* notified = TRUE keeps ResolverResolve disabled.
-                            PS!MkLocalPromise(<< >>, {"vatA"},
-                                PS!ResRef("vatC", 2), {}, TRUE, "idle", FALSE, {})
+                            PS!MkLocalPromise(
+                                << >>,
+                                {"vatA"},
+                                PS!ResRef("vatC", 2),
+                                {},
+                                TRUE,
+                                FALSE,
+                                {})
                     [] p = "vatB" /\ r = 2 ->
                             \* vatB's view of p2; resolver vatC.  Unresolved
                             \* and un-embargoed at Init.  fresh = FALSE: the
@@ -137,19 +157,39 @@ Init ==
                             \* chain-form slow path (chainEmbargo) on receipt
                             \* of op:resolve(desc:handoff-give); embargo
                             \* flips TRUE and a probe is emitted.
-                            PS!MkRemotePromise("vatC", 2, PS!ResNone,
-                                FALSE, << >>, TRUE, FALSE)
+                            PS!MkRemotePromise(
+                                "vatC",
+                                2,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                FALSE,
+                                FALSE)
                     [] p = "vatC" /\ r = 1 ->
-                            PS!MkRemotePromise("vatB", 1, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatB",
+                                1,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatC" /\ r = 2 ->
                             \* p2 on vatC, already resolved to (vatA, 3) and
                             \* listener {vatB} already dispatched (the
                             \* handoff-give is in flight on
                             \* channels[vatC][vatB], paired with the
                             \* deposit-gift on channels[vatC][vatA]).
-                            PS!MkLocalPromise(<< >>, {"vatB"},
-                                PS!ResRef("vatA", 3), {}, TRUE, "idle", FALSE, {})
+                            PS!MkLocalPromise(
+                                << >>,
+                                {"vatB"},
+                                PS!ResRef("vatA", 3),
+                                {},
+                                TRUE,
+                                FALSE,
+                                {})
                     [] p = "vatC" /\ r = 3 ->
                             PS!MkRemoteTarget("vatA", 3)
                     [] OTHER -> PS!EntryNone],
@@ -206,15 +246,15 @@ EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
-(* The witness: vats["vatB"].refs[2].embargo MUST flip to TRUE on the
+(* The witness: vats["vatB"].refs[2].embargo MUST become non-empty on the
    chainEmbargo branch of the handoff-give receive.  Negating that with an
    invariant gives TLC a counterexample trace whose final state has
-   vats["vatB"].refs[2].embargo = TRUE -- exactly the firing we want to
+   vats["vatB"].refs[2].embargo # {} -- exactly the firing we want to
    demonstrate.  Unit_EJavaFlush_HandoffChainProbe pairs this with the
    probe-emission witness for a stronger joint assertion. *)
 EmbargoNeverFires_MC ==
     \/ vats["vatB"].refs[2].kind # "RemotePromise"
-    \/ vats["vatB"].refs[2].embargo = FALSE
+    \/ vats["vatB"].refs[2].embargo = {}
 ============================================================================

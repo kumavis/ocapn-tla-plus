@@ -1,7 +1,7 @@
 # Protocol locality contract
 
 This note pins down the locality contract that every protocol in
-`spec/PromiseResolution.tla` is required to satisfy, and audits every
+`spec/Core.tla` is required to satisfy, and audits every
 action against it. The contract exists because the spec is a model of
 a distributed system on top of OCapN sessions — anything implementable
 in real OCapN must be representable as actions that only touch their
@@ -63,6 +63,64 @@ syntactically read the channel, doing so would be a locality violation.
 A peer's only signal that the recipient has acted is an inbound
 protocol message.
 
+### 2.1 Design goal: minimize bespoke embargo logic; lean on `LocalPromise` semantics
+
+**Goal (for every routing policy).** Holding application messages
+during a path change should reuse the standard `LocalPromise`
+mechanics — *sends to an unresolved promise queue; installing the
+resolution drains the queue along the new route* — rather than a
+separate, bespoke embargo state machine. The per-ref buffer itself
+(e.g. `RemotePromise.pending`) is **acceptable**; what we want to
+avoid is the *volume of custom embargo logic* layered on top of it:
+the `embargo` set, the `Route` `"hold"` special case, the dedicated
+`ProcessHold` drain action, and the proliferation of embargo-specific
+policy hooks. The fewer of those a policy needs, the closer its hold
+is to "an unresolved promise that drains on resolve."
+
+**Why.** A bespoke embargo machine duplicates — slightly differently —
+the queue/drain semantics a `LocalPromise` already has, so it doubles
+the proof surface and is a recurring source of ordering bugs (the
+resolve-mid-flush race, the two-queues race). Collapsing it onto the
+promise-resolution path means one drain rule to reason about.
+
+**Current bespoke-embargo surface (audit).**
+
+| Policy | `embargo` set | `Route` `"hold"` | `ProcessHold` | Embargo policy hooks used |
+|---|---|---|---|---|
+| `NoPromiseResolution` | — | — | — | none |
+| `NaivePromiseResolution` | — | — | — | none (installs immediately) |
+| `EJavaFlush` | yes | yes | yes | `RouteHoldsOnEmbargo`, `EmbargoInsteadOnResolve`, `ChainEmbargoOnHandoffGive`, `EnforcesChainBinderEmbargo`, `ClearsChainBinderOnInstall` |
+| `OpFlushProtocol` | — | — | — | none active (binder LocalPromise) |
+
+So `Naive` / `NoPromise` carry **zero** bespoke embargo logic, and
+`OpFlushProtocol` now also carries none active: its listener hold is a
+**binder `LocalPromise`** (below). `EJavaFlush` still carries the whole
+machine (faithful `DelayedRedirector`).
+
+**`OpFlushProtocol`: embargo modelled as a binder `LocalPromise`
+(done).** On `op:flush` receipt the listener mints a fresh unresolved
+local `LocalPromise` and points the `RemotePromise` mirror's
+`localResolution` at it; `Route` then queues sends onto the binder by
+the ordinary unresolved-`LocalPromise` rule. The `op:resolve` install
+(direct targets/promises) and the handoff-give branch (3-party) resolve
+the binder to the real target and atomically drain its queue along the
+new route. No `embargo` set, no `Route` `"hold"` tag, no `ProcessHold`
+(removed from OpFlush; `PolicyRouteHoldsOnEmbargo = FALSE`). Verified
+behaviorally equivalent — full suite 35/35, OpFlush outcomes identical
+to the pre-binder baseline (2/3-party `PromiseShorten` + Tribble pass,
+`4Party` still violates). The `embargo` / `pending` fields remain on
+`RemotePromise` only for `EJavaFlush`. Converting `EJavaFlush` the same
+way (more faithful to e-on-java's `p_new`) is tracked future work.
+
+**Handoff pipelineability.** A withdraw-promise `RemotePromise(pw)` is
+pipelineable iff receiving `desc:handoff-give` does **not** embargo it
+(`PolicyChainEmbargoOnHandoffGive = FALSE`). This holds for
+`OpFlushProtocol` / `Naive` / `NoPromise` (sends route to `"wire"`
+immediately, queuing at the target host's pre-minted `LocalPromise(pw)`
+— see `Unit_Handoff_Pipeline`), but **not** for `EJavaFlush`, which
+chain-embargoes handoff promises as part of its faithful
+`DelayedRedirector` hold.
+
 ## 3. Per-action audit
 
 The acting peer for each action — the peer whose state mutates and
@@ -95,17 +153,14 @@ above. Reads go through the accessor operators in `lib/PeerState.tla`
   own RemoteTarget to find the eventual target host); writes
   `vats[self].refs[r]` and `channels[self][_]` (op:resolve or
   op:flush to its listeners).
-- **`SendTargetFlushProbe`** *(OpFlushProtocol only)* — actor:
-  **bound `self`**. Same locality as `ResolverResolve`; emits
-  `op:e-flush-probe` on `channels[self][targetPeer]` where
-  `targetPeer` is read out of `self`'s own RemoteTarget entry.
-  Transitions `vats[self].refs[r].flushPhase` `"idle" -> "out"`
-  (or directly to `"acked"` if `self` is itself the target host).
-- **`SendOpResolveAfterFlush`** *(OpFlushProtocol only)* — actor:
-  **bound `self`**. Preconditioned on
-  `LocalRef(self, r).flushPhase = "acked"` (set only by an inbound
-  `op:e-flush-probe-ack`); emits `op:resolve` to listeners on
-  `channels[self][_]`.
+- **`InitiateFlush`** *(OpFlushProtocol only; lives in
+  `protocols/OpFlushProtocol.tla`)* — actor: **bound `self`** (the
+  would-be shortener). Reads `LocalRef(self, r)` to check the
+  three-party resolution trigger and the `flushSent` guard; writes
+  `vats[self].refs[r].flushSent`, mints a fresh `RemotePromise`
+  placeholder at `vats[self].refs[resolveMeRefId]`, bumps `nextRefId`,
+  and emits `op:flush` on
+  `channels[self][entry.resolverPeer]`. Locality-clean.
 
 ### Network-receive actions
 
@@ -322,16 +377,16 @@ Two further design choices are worth calling out:
 ```bash
 # Direct reads of another peer's state (should never appear in an action
 # body; only DOMrefs(self) and the accessors should appear):
-rg 'vats\[[^s]' spec/PromiseResolution.tla   # any vats[X] where X != self
+rg 'vats\[[^s]' spec/Core.tla   # any vats[X] where X != self
 
 # Writes that don't key on self (the bracket-key must be ![self]):
-rg 'vats EXCEPT !\[' spec/PromiseResolution.tla
+rg 'vats EXCEPT !\[' spec/Core.tla
 
 # Direct outbox/inbox accesses (should be via accessors):
-rg 'channels\[' spec/PromiseResolution.tla   # all should be inside accessors
+rg 'channels\[' spec/Core.tla   # all should be inside accessors
 
 # Bare Network* helpers in spec (should be Inbox*/AppendToOutbox):
-rg 'NetworkAppend|NetworkHead|NetworkTail|NetworkNonEmpty' spec/PromiseResolution.tla
+rg 'NetworkAppend|NetworkHead|NetworkTail|NetworkNonEmpty' spec/Core.tla
 ```
 
 After the Option C refactor:

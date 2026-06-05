@@ -31,7 +31,8 @@ EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == TRUE
 EnableRepropagate == FALSE
-RoutingPolicy == "NoPromiseResolution"
+EnableShorten == FALSE
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -45,7 +46,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE NoPromiseResolution
 
 Init ==
     /\ host = <<"vatA", "vatC">>
@@ -54,13 +55,26 @@ Init ==
             [refs |->
                [r \in (1..MaxRefId) |->
                   CASE p = "vatA" /\ r = 1 ->
-                          PS!MkLocalPromise(<< >>, {},
-                              PS!ResNone, {}, FALSE, "idle", FALSE, {})
+                          PS!MkLocalPromise(
+                              << >>,
+                              {},
+                              PS!ResNone,
+                              {},
+                              FALSE,
+                              FALSE,
+                              {})
                     [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                     [] p = "vatB" /\ r = 1 ->
-                            PS!MkRemotePromise("vatA", 1, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatA",
+                                1,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatC" /\ r = 2 ->
                             PS!MkLocalTarget
                     [] OTHER -> PS!EntryNone],
@@ -85,5 +99,5 @@ EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 ============================================================================

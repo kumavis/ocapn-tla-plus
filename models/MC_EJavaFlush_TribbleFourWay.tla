@@ -20,7 +20,7 @@ EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == TRUE
-RoutingPolicy == "EJavaFlush"
+EnableShorten == FALSE
 
 CONSTANT DebugTrace
 
@@ -35,7 +35,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE EJavaFlush
 
 Init ==
     /\ PS!Init
@@ -53,7 +53,7 @@ NoMessageLost_MC == PS!NoMessageLost
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 EventualDelivery_MC == PS!EventualDelivery
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 

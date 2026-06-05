@@ -1,0 +1,66 @@
+name: TLA+ model checks
+
+# Runs the full MC + unit-test suite (scripts/run-tests.sh). The script
+# classifies each model's actual outcome (pass / violation) against its
+# expected outcome and exits non-zero on any mismatch, so a red job means
+# a verification regressed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  model-check:
+    name: TLC suite
+    runs-on: ubuntu-latest
+    env:
+      # single source of truth: drives both the cache key and the download URL.
+      # bump to pin a new TLC release (also invalidates the cache).
+      TLA_TOOLS_VERSION: v1.8.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache tla2tools.jar
+        id: cache-tla
+        uses: actions/cache@v4
+        with:
+          path: ~/tla/tla2tools.jar
+          key: tla2tools-${{ env.TLA_TOOLS_VERSION }}
+
+      - name: Download tla2tools.jar
+        if: steps.cache-tla.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/tla"
+          curl -fsSL -o "$HOME/tla/tla2tools.jar" \
+            "https://github.com/tlaplus/tlaplus/releases/download/${TLA_TOOLS_VERSION}/tla2tools.jar"
+          # verify the jar is intact and contains TLC (TLC itself exits
+          # non-zero on -h/no-args, so check the class is present instead)
+          jar tf "$HOME/tla/tla2tools.jar" | grep -q '^tlc2/TLC\.class$' \
+            || (echo "tla2tools.jar missing tlc2.TLC" >&2; exit 1)
+
+      - name: Run model-check suite
+        run: bash scripts/run-tests.sh
+
+      - name: Upload TLC logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlc-logs
+          path: .tlc-logs/
+          retention-days: 7

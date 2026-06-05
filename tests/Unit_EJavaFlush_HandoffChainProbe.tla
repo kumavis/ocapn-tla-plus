@@ -1,7 +1,7 @@
 ------------------------ MODULE Unit_EJavaFlush_HandoffChainProbe ------------------------
 (***************************************************************************)
 (* Unit: joint witness for the chain-form desc:handoff-give slow path     *)
-(* under RoutingPolicy = "EJavaFlush", per notes/path-changes.md §3.7.    *)
+(* under the EJavaFlush policy, per notes/path-changes.md §3.7.           *)
 (*                                                                         *)
 (* Unit_EJavaFlush_EmbargoFires already witnesses that the embargo bit    *)
 (* on vats[recipient].refs[targetRefId] flips to TRUE on this branch.    *)
@@ -46,7 +46,8 @@ EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
-RoutingPolicy == "EJavaFlush"
+EnableShorten == FALSE
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -60,7 +61,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE EJavaFlush
 
 Init ==
     /\ host = <<"vatB", "vatC", "vatA">>
@@ -69,17 +70,36 @@ Init ==
             [refs |->
                [r \in (1..MaxRefId) |->
                   CASE p = "vatA" /\ r = 1 ->
-                          PS!MkRemotePromise("vatB", 1,
+                          PS!MkRemotePromise(
+                              "vatB",
+                              1,
                               PS!ResRef("vatC", 2),
-                              FALSE, << >>, TRUE, FALSE)
+                              {},
+                              << >>,
+                              TRUE,
+                              FALSE,
+                              FALSE)
                     [] p = "vatA" /\ r = 2 ->
-                            PS!MkRemotePromise("vatC", 2, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatC",
+                                2,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatA" /\ r = 3 ->
                             PS!MkLocalTarget
                     [] p = "vatB" /\ r = 1 ->
-                            PS!MkLocalPromise(<< >>, {"vatA"},
-                                PS!ResRef("vatC", 2), {}, TRUE, "idle", FALSE, {})
+                            PS!MkLocalPromise(
+                                << >>,
+                                {"vatA"},
+                                PS!ResRef("vatC", 2),
+                                {},
+                                TRUE,
+                                FALSE,
+                                {})
                     [] p = "vatB" /\ r = 2 ->
                             \* fresh = FALSE: vatB has already pipelined
                             \* a forward through ref 2 (pre-staged on
@@ -87,14 +107,34 @@ Init ==
                             \* chainFresh = FALSE on the handoff-give
                             \* receive and so chainEmbargo = TRUE under
                             \* EJavaFlush.
-                            PS!MkRemotePromise("vatC", 2, PS!ResNone,
-                                FALSE, << >>, TRUE, FALSE)
+                            PS!MkRemotePromise(
+                                "vatC",
+                                2,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                FALSE,
+                                FALSE)
                     [] p = "vatC" /\ r = 1 ->
-                            PS!MkRemotePromise("vatB", 1, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatB",
+                                1,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatC" /\ r = 2 ->
-                            PS!MkLocalPromise(<< >>, {"vatB"},
-                                PS!ResRef("vatA", 3), {}, TRUE, "idle", FALSE, {})
+                            PS!MkLocalPromise(
+                                << >>,
+                                {"vatB"},
+                                PS!ResRef("vatA", 3),
+                                {},
+                                TRUE,
+                                FALSE,
+                                {})
                     [] p = "vatC" /\ r = 3 ->
                             PS!MkRemoteTarget("vatA", 3)
                     [] OTHER -> PS!EntryNone],
@@ -140,12 +180,12 @@ EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 (* Witness predicates -- factored out for clarity in the invariant. *)
 RecipientEmbargoed ==
     /\ vats["vatB"].refs[2].kind = "RemotePromise"
-    /\ vats["vatB"].refs[2].embargo = TRUE
+    /\ vats["vatB"].refs[2].embargo # {}
 
 (* The probe must originate at the recipient (vatB), be tagged with the
    recipient's targetRefId (=2), and carry chainEntry.resolverRefId (=2,

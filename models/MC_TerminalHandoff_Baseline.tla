@@ -44,7 +44,8 @@ EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == TRUE
 EnableRepropagate == FALSE
-RoutingPolicy == "NoPromiseResolution"
+EnableShorten == FALSE
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -58,7 +59,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE NoPromiseResolution
 
 Init ==
     /\ PS!Init
@@ -76,5 +77,5 @@ EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 ============================================================================

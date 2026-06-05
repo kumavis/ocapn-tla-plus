@@ -39,8 +39,9 @@ EnableDynamicListen == TRUE
 EnableHandoff == FALSE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
+EnableShorten == FALSE
 MaxGifts == 0
-RoutingPolicy == "NaivePromiseResolution"
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -54,7 +55,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE NaivePromiseResolution
 
 Init ==
     /\ PS!Init
@@ -74,4 +75,6 @@ EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 PairingInvariant_MC == PS!PairingInvariant
 NoMessageLost_MC == PS!NoMessageLost
 EventualDelivery_MC == PS!EventualDelivery
+WireDescriptorContract_MC == PS!WireDescriptorContract
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 ============================================================================

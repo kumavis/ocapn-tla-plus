@@ -68,28 +68,23 @@ The model distinguishes two kinds of path change:
     `ResolverResolve` emits
     `op:resolve(refId, desc:import-promise|desc:export-promise)` when
     the resolution is promise-shaped and every listener can receive
-    it two-party (across `NaivePromiseResolution`, `ShorteningUnsafe`,
+    it two-party (across `NaivePromiseResolution`,
     and `EJavaFlush`; `OpFlushProtocol` runs its full flush handshake
     around the promise-shaped resolution). When listeners are
     three-party, the resolver fires `desc:handoff-give` carrying a
-    Promise cap (3PHO), gated to `NaivePromiseResolution` /
-    `ShorteningUnsafe`, `EJavaFlush` (witness-gated), and
+    Promise cap (3PHO), gated to `NaivePromiseResolution`,
+    `EJavaFlush` (witness-gated), and
     `OpFlushProtocol` (always `op:flush` listeners first; no `fresh`
     gate). Phase D adds `RepropagatePromiseShorten` and Tribble MCs.
     See
     [`notes/path-changes.md`](notes/path-changes.md) §1.2.b, §3.1,
     §3.8, §3.9, and §3.10.
 
-The word "shortening" in the policy name `ShorteningUnsafe` follows
-the older OCapN-colloquial usage where "shortening" denotes the
-umbrella act of changing a ref's route (i.e. a *path change* in our
-terminology). The name is kept for continuity with the OCapN issue
-threads; it is not specifically about promise-to-promise shortening.
-
 ## Routing policies
 
-Set via the `RoutingPolicy` constant in
-[`spec/PromiseResolution.tla`](spec/PromiseResolution.tla):
+Each policy lives in its own module under [`protocols/`](protocols/);
+MCs `INSTANCE` the policy module they want. The shared core actions
+and dispatch live in [`spec/Core.tla`](spec/Core.tla):
 
 - **`"NoPromiseResolution"`** — listeners are empty, no `op:resolve`
   ever fires; ref-1 sends always ride the wire through the chain.
@@ -98,10 +93,11 @@ Set via the `RoutingPolicy` constant in
   immediately on `op:resolve` receipt with zero synchronisation
   against the old path. Path change is unguarded; in-flight pipelined
   ref-1 sends and post-resolve direct sends race at the terminal.
-  Violates `EndToEndRefFIFO` on a 2-chain.
-- **`"ShorteningUnsafe"`** — same shape as Naive, demonstrated on a
-  longer chain (the standard 4-chain witness). Same unguarded path
-  change. Violates `EndToEndRefFIFO`.
+  Violates `EndToEndRefFIFO` on a 2-chain
+  (`MC_NaivePromiseResolution_2Party`) and on a 4-party linear chain
+  (`MC_NaivePromiseResolution_4Party`: 4 peers, 3 hops — formerly the
+  separate `ShorteningUnsafe` policy, which was a byte-for-byte alias
+  of this one and has been merged in).
 - **`"EJavaFlush"`** — faithful model of e-on-java's
   `DelayedRedirector`. Subscriber-initiated end-to-end flush: on
   `op:resolve` receipt at listener `L`, the fast path
@@ -112,17 +108,31 @@ Set via the `RoutingPolicy` constant in
   buffered `pending`. Holds for linear chains; the Tribble four-way
   scenario is a known inherited limitation (see
   [`notes/path-changes.md`](notes/path-changes.md) §3.1).
-- **`"OpFlushProtocol"`** — resolver-initiated alternative
-  (Ridley proposal, ocapn#11). `ResolverResolve` emits `op:flush(r)`
-  to listeners instead of `op:resolve`; each listener atomically
-  sets `embargo` and enqueues `op:flush-ack` on the same channel
-  (FIFO carries the ordering). Once all acks return and the
-  resolver's own queue is drained, the resolver emits an
-  `op:e-flush-probe` to the terminal and waits for the matching
-  `op:e-flush-probe-ack`; only then does it emit `op:resolve` to
-  listeners. Locality-clean: every state transition is driven by
-  an explicit protocol message; no peer reads another peer's
-  channel state. Holds for linear chains.
+- **`"OpFlushProtocol"`** — **resolver-initiated, broader-trigger**
+  variant of Ridley's `op:flush` (ocapn#11).  The narrow draft
+  triggers `op:flush` only on shortening third-party handoffs;
+  modelling that exactly leaves a class of FIFO races unaddressed
+  (see `notes/flush-protocols.md` §9.1 for the full discussion).
+  The modelled trigger fires whenever a peer X resolves a
+  `LocalPromise` to a value whose host is a different machine
+  (target-shaped OR promise-shaped).  Wire form is the simpler
+  one-field handshake: X emits `op:flush(targetRefId)` to each
+  listener whose dispatch path through the promise will change,
+  defers `op:resolve` until acks return; each listener
+  `op:flush(targetRefId)` receipt sets the listener's
+  `RemotePromise` mirror embargo so subsequent routes through the
+  ref hold in `pending` instead of forwarding.  The post-flush
+  `op:resolve` install lifts the embargo and atomically drains
+  `pending`; the resolver also atomically drains its own
+  `LocalPromise.queue` as part of `ResolverResolve`.  These four
+  pieces together (broader trigger, listener embargo, atomic queue
+  drain, atomic pending drain) make `EndToEndRefFIFO` hold for the
+  2-party and 3-party shortening MCs.  See
+  `notes/flush-protocols.md` §9.1 for the full design notes and
+  §9.2 for implementation notes.  Limitation: the Tribble four-way
+  scenario still violates FIFO because the racing messages live on
+  distinct (from,to) channels and per-session FIFO doesn't order
+  across them.
 
 ## Message ordering invariant
 
@@ -168,12 +178,14 @@ What the spec currently covers:
 
 What's deferred — see [`notes/path-changes.md`](notes/path-changes.md):
 
-- Inter-vat distributed promise shortening Phases A–D are modelled
-  (flush propagation is per-node local conditions only; no
-  cross-node `op:flush` relay). Tribble MCs:
-  `MC_EJavaFlush_TribbleFourWay` violates FIFO (faithful
-  `DelayedRedirector`); `MC_OpFlushProtocol_TribbleFourWay` passes
-  (see `notes/path-changes.md` §3.11).
+- Inter-vat distributed promise shortening Phases A–D are modelled.
+  Tribble MCs: `MC_EJavaFlush_TribbleFourWay` violates FIFO
+  (faithful `DelayedRedirector` limitation). Under faithful Ridley
+  (the new `OpFlushProtocol` semantics) `MC_OpFlushProtocol_TribbleFourWay`
+  **also violates** FIFO — Ridley's `op:flush` as specified does not
+  protect against the shortener's own local PeerSend overtaking
+  in-flight wire-forwards. See `notes/path-changes.md` §4.7 for the
+  trace and root-cause analysis.
 - Per-peer refId namespaces (mechanical translation, currently global).
 - Ref-scoped flush drainage (currently whole-channel-empty).
 - Multi-sender FIFO MCs.
@@ -189,23 +201,31 @@ ocapn-tla-plus/
 │   └── PeerState.tla     # vats[p].{refs,gifts,nextGiftId}, sent, delivered,
 │                         # nextRefId, and per-actor accessor operators
 ├── spec/
-│   └── PromiseResolution.tla
+│   └── Core.tla           # shared actions + dispatcher; per-policy hooks
+│                          # are CONSTANT operators substituted by the
+│                          # policy module that INSTANCEs this.
+├── protocols/             # per-policy modules (each INSTANCEs Core)
+│   ├── Common.tla         # shared CONSTANTs / VARIABLE / helpers
+│   ├── NoPromiseResolution.tla
+│   ├── NaivePromiseResolution.tla
+│   ├── EJavaFlush.tla     # owns ProcessHold + op:e-flush-probe receives
+│   ├── EJavaFlushHelpers.tla
+│   ├── OpFlushProtocol.tla  # owns InitiateFlush + op:flush receive
+│   └── OpFlushProtocolHelpers.tla
 ├── models/                # scenario MCs (policy-level race scenarios)
-│   ├── MC_NoPromiseResolution.tla / .cfg
-│   ├── MC_NoPromiseResolution_3Chain.tla / .cfg
-│   ├── MC_NaivePromiseResolution.tla / .cfg
-│   ├── MC_NaivePromiseResolution_PromiseShorten.tla / .cfg  (Phase A: 2-party violation)
-│   ├── MC_NaivePromiseResolution_3Chain.tla / .cfg          (Phase B: 3-party violation)
-│   ├── MC_ShorteningUnsafe_4Chain.tla / .cfg
-│   ├── MC_EJavaFlush_3Chain.tla / .cfg
-│   ├── MC_EJavaFlush_3Chain_PromiseShorten.tla / .cfg       (Phase C: 2-party EJava pass)
-│   ├── MC_EJavaFlush_3Chain_PromiseShorten_3Party.tla / .cfg (Phase C: 3-party EJava pass)
-│   ├── MC_EJavaFlush_4Chain.tla / .cfg
+│   ├── MC_NoPromiseResolution_3Party.tla / .cfg
+│   ├── MC_NaivePromiseResolution_2Party.tla / .cfg
+│   ├── MC_NaivePromiseResolution_2Party_PromiseShorten.tla / .cfg  (Phase A: 2-party violation)
+│   ├── MC_NaivePromiseResolution_3Party.tla / .cfg          (Phase B: 3-party violation)
+│   ├── MC_NaivePromiseResolution_4Party.tla / .cfg          (4-party unguarded-race linear chain; ex-ShorteningUnsafe)
+│   ├── MC_EJavaFlush_4Party.tla / .cfg
+│   ├── MC_EJavaFlush_2Party_PromiseShorten.tla / .cfg       (Phase C: 2-party EJava pass)
+│   ├── MC_EJavaFlush_3Party_PromiseShorten.tla / .cfg (Phase C: 3-party EJava pass)
 │   ├── MC_EJavaFlush_TribbleFourWay.tla / .cfg              (Phase D: Tribble, expect violation)
-│   ├── MC_OpFlushProtocol_3Chain_PromiseShorten.tla / .cfg  (Phase C: 2-party OpFlush pass)
-│   ├── MC_OpFlushProtocol_3Chain_PromiseShorten_3Party.tla / .cfg (Phase C: 3-party OpFlush pass)
+│   ├── MC_OpFlushProtocol_4Party.tla / .cfg                 (linear chain; expect violation)
+│   ├── MC_OpFlushProtocol_2Party_PromiseShorten.tla / .cfg  (Phase C: 2-party OpFlush pass)
+│   ├── MC_OpFlushProtocol_3Party_PromiseShorten.tla / .cfg (Phase C: 3-party OpFlush pass)
 │   ├── MC_OpFlushProtocol_TribbleFourWay.tla / .cfg         (Phase D: Tribble, expect pass)
-│   ├── MC_OpFlushProtocol_4Chain.tla / .cfg
 │   ├── MC_SubscribeAfterResolve.tla / .cfg       (op:listen subscription)
 │   ├── MC_TerminalHandoff_Baseline.tla / .cfg    (3PHO baseline)
 │   ├── MC_TerminalHandoff_WithForwarder.tla / .cfg (3PHO + forwarder race)
@@ -219,8 +239,8 @@ ocapn-tla-plus/
 │   ├── Unit_LocalShorten_Cascade.tla / .cfg      (intra-vat shortening)
 │   ├── Unit_RemoteTarget_Forward.tla / .cfg
 │   ├── Unit_Pipelining_On_Promise.tla / .cfg
-│   ├── Unit_Listen_Subscribe_Unresolved.tla / .cfg
-│   ├── Unit_Listen_Subscribe_AfterResolve.tla / .cfg
+│   ├── Unit_Listen_Subscribe_Unresolved.tla / .cfg     (covers both
+│                                  before- and after-resolve interleavings)
 │   ├── Unit_Handoff_DepositWithdraw.tla / .cfg
 │   ├── Unit_Handoff_Pipeline.tla / .cfg
 │   ├── Unit_Handoff_Pipeline_BeforeDeposit.tla / .cfg
@@ -266,10 +286,9 @@ exits non-zero on any unexpected outcome (`pass` vs `violation`).
 ### Debug trace + mermaid + Lamport space-time diagram
 
 ```bash
-./scripts/run-tests.sh --debug MC_NaivePromiseResolution
-./scripts/run-tests.sh --debug MC_EJavaFlush_3Chain
-./scripts/run-tests.sh --debug MC_EJavaFlush_4Chain
-./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Chain
+./scripts/run-tests.sh --debug MC_NaivePromiseResolution_2Party
+./scripts/run-tests.sh --debug MC_EJavaFlush_4Party
+./scripts/run-tests.sh --debug MC_OpFlushProtocol_4Party
 ```
 
 Outputs in `.tlc-logs/`:
@@ -289,13 +308,13 @@ Outputs in `.tlc-logs/`:
 ```bash
 java -cp ~/tla/tla2tools.jar:lib:spec:models:tests tlc2.TLC \
      -workers auto \
-     -config models/MC_NoPromiseResolution_3Chain.cfg \
-     models/MC_NoPromiseResolution_3Chain.tla
+     -config models/MC_NoPromiseResolution_3Party.cfg \
+     models/MC_NoPromiseResolution_3Party.tla
 ```
 
 ## What this shows
 
-- **Naive / ShorteningUnsafe**: any policy that commits to the new
+- **Naive**: any policy that commits to the new
   path without an end-to-end flush observably reorders messages.
 - **EJavaFlush**: faithful end-to-end probe + ack along the old path
   preserves FIFO for linear chains; the Tribble four-way case still

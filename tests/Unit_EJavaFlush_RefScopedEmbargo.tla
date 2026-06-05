@@ -40,7 +40,7 @@
 (*   vats[vatB].refs[2] = RemoteTarget(vatC, 2)                            *)
 (*   vats[vatC].refs[2] = LocalTarget                                      *)
 (*                                                                         *)
-(* Expected behavior under RoutingPolicy = "EJavaFlush":                   *)
+(* Expected behavior under the EJavaFlush policy:                          *)
 (*   vatA receives op:resolve(1, desc:handoff-give(vatB, vatC, 1, 3)).    *)
 (*   targetRefId = 1, pw = 3, isChain = TRUE.  Chain-form handoff-give   *)
 (*   consults vats[vatA].refs[1].fresh, NOT vats[vatA].refs[2].fresh:    *)
@@ -76,7 +76,8 @@ EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
-RoutingPolicy == "EJavaFlush"
+EnableShorten == FALSE
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -90,7 +91,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE EJavaFlush
 
 Init ==
     /\ host = <<"vatB", "vatC">>
@@ -103,8 +104,15 @@ Init ==
                           \* ref 1.  The unrelated deliver-only below went
                           \* through ref 2.  listenSent = TRUE keeps Listen
                           \* disabled.
-                          PS!MkRemotePromise("vatB", 1, PS!ResNone,
-                              FALSE, << >>, TRUE, TRUE)
+                          PS!MkRemotePromise(
+                              "vatB",
+                              1,
+                              PS!ResNone,
+                              {},
+                              << >>,
+                              TRUE,
+                              TRUE,
+                              FALSE)
                     [] p = "vatA" /\ r = 2 ->
                             PS!MkRemoteTarget("vatC", 2)
                     [] p = "vatB" /\ r = 1 ->
@@ -112,8 +120,14 @@ Init ==
                             \* so ResolverResolve cannot re-fire.  The
                             \* op:resolve(desc:handoff-give) below is the
                             \* in-flight notification.
-                            PS!MkLocalPromise(<< >>, {"vatA"},
-                                PS!ResRef("vatC", 2), {}, TRUE, "idle", FALSE, {})
+                            PS!MkLocalPromise(
+                                << >>,
+                                {"vatA"},
+                                PS!ResRef("vatC", 2),
+                                {},
+                                TRUE,
+                                FALSE,
+                                {})
                     [] p = "vatB" /\ r = 2 ->
                             \* vatB's RemoteTarget pointing at the third
                             \* party vatC.  Required so vatB's resolution
@@ -173,11 +187,11 @@ EventualDelivery_MC == PS!EventualDelivery
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 (* The discriminating safety invariant: with the ref-parameterized
    chainEmbargo gate (chainFresh consults the per-ref fresh bit, not any
-   "did this peer ever send anything?" heuristic), the embargo bit on
-   vats[vatA].refs[1] is never set. *)
-NoSpuriousEmbargo_MC == vats["vatA"].refs[1].embargo = FALSE
+   "did this peer ever send anything?" heuristic), the embargo set on
+   vats[vatA].refs[1] is never populated. *)
+NoSpuriousEmbargo_MC == vats["vatA"].refs[1].embargo = {}
 ============================================================================

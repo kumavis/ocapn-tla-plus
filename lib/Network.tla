@@ -28,7 +28,7 @@ NetworkInit ==
 
 ----------------------------------------------------------------------------
 (* Per-actor locality accessors.  Every protocol action in
-   spec/PromiseResolution.tla is required to read/write only its own
+   spec/Core.tla is required to read/write only its own
    inbox (channels[from][self], where self is the receiver) and its own
    outbox (channels[self][to], where self is the sender).  These
    accessors give a name to the locality-respecting access pattern.

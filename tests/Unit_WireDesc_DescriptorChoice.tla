@@ -25,7 +25,8 @@ EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == FALSE
-RoutingPolicy == "NoPromiseResolution"
+EnableShorten == FALSE
+
 DebugTrace == FALSE
 
 VARIABLES
@@ -39,7 +40,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE NoPromiseResolution
 
 Init ==
     /\ host = <<"vatA", "vatC">>
@@ -49,15 +50,35 @@ Init ==
                [r \in (1..MaxRefId) |->
                   CASE p = "vatA" /\ r = 2 -> PS!MkRemoteTarget("vatC", 2)
                     [] p = "vatB" /\ r = 1 ->
-                            PS!MkRemotePromise("vatA", 1, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatA",
+                                1,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatB" /\ r = 3 ->
-                            PS!MkRemotePromise("vatC", 3, PS!ResNone,
-                                FALSE, << >>, TRUE, TRUE)
+                            PS!MkRemotePromise(
+                                "vatC",
+                                3,
+                                PS!ResNone,
+                                {},
+                                << >>,
+                                TRUE,
+                                TRUE,
+                                FALSE)
                     [] p = "vatC" /\ r = 2 -> PS!MkLocalTarget
                     [] p = "vatC" /\ r = 3 ->
-                            PS!MkLocalPromise(<< >>, {"vatB"},
-                                PS!ResRef("vatC", 2), {}, TRUE, "idle", FALSE, {})
+                            PS!MkLocalPromise(
+                                << >>,
+                                {"vatB"},
+                                PS!ResRef("vatC", 2),
+                                {},
+                                TRUE,
+                                FALSE,
+                                {})
                     [] OTHER -> PS!EntryNone],
              gifts |->
                [q \in Peers |-> [i \in 1..MaxGifts |-> PS!NoGift]],
@@ -99,7 +120,7 @@ Spec == Init /\ [][Stutter]_vars
 
 TypeOK_MC == PS!TypeOK
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 
 ImportTargetClassified_MC ==
     PS!WireDescMatches("vatC", "vatB", "vatC", "LocalTarget",

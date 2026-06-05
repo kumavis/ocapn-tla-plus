@@ -12,14 +12,14 @@ Peers == {"vatA", "vatB", "vatC"}
 HeadPeer == "vatA"
 ChainLength == 3
 MaxGifts == 3
-MaxRefId == ChainLength + MaxGifts
+MaxRefId == ChainLength + MaxGifts + 6  \* +6 for flush-minted refIds (Ridley)
 NumMessages == 2
 EmptyInitialListeners == FALSE
 EnableDynamicListen == FALSE
 EnableHandoff == TRUE
 EnableHandoffInitiate == FALSE
 EnableRepropagate == TRUE
-RoutingPolicy == "OpFlushProtocol"
+EnableShorten == TRUE
 
 CONSTANT DebugTrace
 
@@ -34,7 +34,7 @@ VARIABLES
 
 vars == << channels, host, vats, sent, delivered, nextRefId, lastAction >>
 
-PS == INSTANCE PromiseResolution
+PS == INSTANCE OpFlushProtocol
 
 Init ==
     /\ PS!Init
@@ -52,7 +52,7 @@ NoMessageLost_MC == PS!NoMessageLost
 EndToEndRefFIFO_MC == PS!EndToEndRefFIFO
 EventualDelivery_MC == PS!EventualDelivery
 WireDescriptorContract_MC == PS!WireDescriptorContract
-TwoPartyWireDescsOnly_MC == PS!TwoPartyWireDescsOnly
+OnlyKnownResolveDescriptors_MC == PS!OnlyKnownResolveDescriptors
 GiftOneShot_MC == PS!GiftOneShot
 GiftHasOneRecipient_MC == PS!GiftHasOneRecipient
 

@@ -67,26 +67,14 @@ ResRef(peer, refId) ==
      peer |-> peer,
      refId |-> refId]
 
-(* `flushPhase` is OpFlushProtocol's resolver-side bookkeeping for the
-   target-flush probe + ack roundtrip.  Tristate:
-     "idle"    -- no probe sent (initial state, and the steady state
-                  under any policy other than OpFlushProtocol).
-     "out"     -- probe sent on the resolver's outbox to target, awaiting
-                  op:e-flush-probe-ack.  SendTargetFlushProbe transitions
-                  "idle" -> "out" exactly once per promise resolution.
-     "acked"   -- ack received.  SendOpResolveAfterFlush requires this.
-   When the resolver is itself the target host, SendTargetFlushProbe
-   goes directly "idle" -> "acked" without emitting any probe (no
-   cross-vat hop to flush). *)
 MkLocalPromise(queue, listeners, resolution, flushPending,
-               notified, flushPhase, repropNotified, pipelinedListeners) ==
+               notified, repropNotified, pipelinedListeners) ==
     [kind |-> "LocalPromise",
      queue |-> queue,
      listeners |-> listeners,
      resolution |-> resolution,
      flushPending |-> flushPending,
      notified |-> notified,
-     flushPhase |-> flushPhase,
      repropNotified |-> repropNotified,
      pipelinedListeners |-> pipelinedListeners]
 
@@ -99,10 +87,14 @@ MkLocalPromise(queue, listeners, resolution, flushPending,
    commit to the post-resolution path immediately, with no end-to-end
    flush sentinel, because no in-flight or downstream-buffered message
    could race the new path.  See the long "EJavaFlush protocol" block
-   in spec/PromiseResolution.tla for the protocol-level rationale and
-   source citations. *)
+   in spec/Core.tla for the protocol-level rationale and
+   source citations.
+   `flushSent` is OpFlushProtocol's shortener-side bookkeeping: TRUE
+   after this peer has fired InitiateFlush against this entry, FALSE
+   otherwise.  Prevents re-firing for the same RemotePromise.  Unused
+   under other policies. *)
 MkRemotePromise(resolverPeer, resolverRefId, localResolution,
-                embargo, pending, listenSent, fresh) ==
+                embargo, pending, listenSent, fresh, flushSent) ==
     [kind |-> "RemotePromise",
      resolverPeer |-> resolverPeer,
      resolverRefId |-> resolverRefId,
@@ -110,7 +102,8 @@ MkRemotePromise(resolverPeer, resolverRefId, localResolution,
      embargo |-> embargo,
      pending |-> pending,
      listenSent |-> listenSent,
-     fresh |-> fresh]
+     fresh |-> fresh,
+     flushSent |-> flushSent]
 
 ----------------------------------------------------------------------------
 (* host[i]: derived alias for "the peer hosting refId i's LocalX entry".  *)
@@ -124,8 +117,6 @@ ResolutionType ==
     {ResNone}
     \cup [kind: {"ref"}, peer: Peers, refId: RefIds]
 
-FlushPhases == {"idle", "out", "acked"}
-
 (* Per-message-type Entry, with Messages a parameter. *)
 RefEntryType(Messages) ==
     {EntryNone, MkLocalTarget}
@@ -136,17 +127,27 @@ RefEntryType(Messages) ==
           resolution: ResolutionType,
           flushPending: SUBSET Peers,
           notified: BOOLEAN,
-          flushPhase: FlushPhases,
           repropNotified: BOOLEAN,
           pipelinedListeners: SUBSET Peers]
     \cup [kind: {"RemotePromise"},
           resolverPeer: Peers,
           resolverRefId: RefIds,
           localResolution: ResolutionType,
-          embargo: BOOLEAN,
+          \* embargo: refId-scoped — set of source peers with an
+          \* outstanding flush against this listener-ref.  Empty set =
+          \* not embargoed.  Add the source on flush-event (EJavaFlush
+          \* slow path / chain handoff-give slow path), remove on
+          \* resolution-event (matching probe-ack).  Boolean
+          \* check `# {}` everywhere the old code tested `entry.embargo`.
+          \* OpFlushProtocol no longer uses embargo at all (under
+          \* faithful Ridley, buffering happens at the resolver-holder
+          \* via the standard LocalPromise queue cascade once the old
+          \* resolver is fulfilled with the fresh p').
+          embargo: SUBSET Peers,
           pending: Seq(Messages),
           listenSent: BOOLEAN,
-          fresh: BOOLEAN]
+          fresh: BOOLEAN,
+          flushSent: BOOLEAN]
 
 ----------------------------------------------------------------------------
 (* Chain-refs constructor: given a host function and a listeners function,  *)
@@ -163,8 +164,9 @@ MkChainRefs(h, listenersFn) ==
                  ELSE MkRemoteTarget(h[r], r)
             ELSE IF h[r] = p
             THEN MkLocalPromise(<< >>, listenersFn[r], ResNone, {},
-                                FALSE, "idle", FALSE, {})
-            ELSE MkRemotePromise(h[r], r, ResNone, FALSE, << >>, FALSE, TRUE)
+                                FALSE, FALSE, {})
+            ELSE MkRemotePromise(h[r], r, ResNone, {}, << >>,
+                                 FALSE, TRUE, FALSE)
         ]
     ]
 

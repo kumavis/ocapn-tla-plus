@@ -1,7 +1,7 @@
 # Wire-level reference for path-change protocols, intra-vat queue cascade, and 3PHO
 
 This note is the **wire-level protocol reference** for
-[`spec/PromiseResolution.tla`](../spec/PromiseResolution.tla). For the
+[`spec/Core.tla`](../spec/Core.tla). For the
 path-change taxonomy (promise resolution vs promise shortening) and the
 tracked future-work items that hang off it, see
 [`path-changes.md`](path-changes.md). For the precise per-variable
@@ -32,13 +32,13 @@ for definitions and for the implementability contract.
   relative) and shorten their own dispatch through the new promise's
   host by writing the result into their `RemotePromise.localResolution`
   slot. Modelled in **Phase A** for the two-party case across
-  `NaivePromiseResolution` / `ShorteningUnsafe` / `EJavaFlush`, and
+  `NaivePromiseResolution` / `EJavaFlush`, and
   in **Phase C** for the two-party case under `OpFlushProtocol`
   (full `op:flush` -> `op:flush-ack` -> probe -> `op:resolve`
   handshake on promise-shaped resolutions when every listener is
   two-party). Three-party promise introductions use
   `desc:handoff-give` carrying a Promise cap (**Phase B**, gated to
-  `NaivePromiseResolution` / `ShorteningUnsafe`; the 3-party flush
+  `NaivePromiseResolution`; the 3-party flush
   extension is deferred — see `path-changes.md` §3.10). The
   multi-hop "re-propagate to upstream listeners" action required for
   the Tribble four-way is **Phase D**. See
@@ -50,12 +50,12 @@ for definitions and for the implementability contract.
   resolutions fire under every policy (`NoPromiseResolution` excluded
   by construction since its `ResolverResolve` is silent on
   emission); (ii) promise-shaped resolutions additionally fire under
-  `NaivePromiseResolution` / `ShorteningUnsafe` / `EJavaFlush`
+  `NaivePromiseResolution` / `EJavaFlush`
   (Phase A + Phase C 2-party emission) and `OpFlushProtocol` (Phase
   C 2-party with the full flush handshake) when every listener is
   two-party; (iii) for three-party promise-shaped resolutions, the
   resolver emits `desc:handoff-give` (Phase B 3PHO, gated to
-  `NaivePromiseResolution` / `ShorteningUnsafe`). When emission is
+  `NaivePromiseResolution`). When emission is
   silent (`NoPromiseResolution`, or 3-party promise resolution
   under the flush policies — deferred per §3.10), listeners stay
   on their `RemotePromise` route and the resolver keeps forwarding
@@ -190,8 +190,8 @@ When a `LocalPromise pa` at `H` becomes resolved to `R'`:
 | `LocalTarget`          | Yes — `op:resolve(targetRefId, desc:import-target(R'_local))` per listener when the target is on the resolver; `desc:export-target` when the listener hosts the target | No — listener already has session with `H` when two-party |
 | `RemoteTarget`         | Yes — `op:resolve(targetRefId, desc:handoff-give(...))` per listener when the target host is a third peer; `desc:export-target` when the listener is the target host | **Yes** — when the listener has no session with `R'.targetPeer` |
 | `LocalPromise`         | **No** — silent; listeners stay on their `RemotePromise` to `H`; `H` drains `pa.queue` into `R'.queue` (intra-vat cascade) | n/a |
-| `RemotePromise` (2-party listeners) | Yes — `op:resolve(targetRefId, desc:import-promise | desc:export-promise)` (Phase A + Phase C 2-party). Listener writes the result into its `RemotePromise.localResolution` and short-circuits future sends through the new promise's host. Gated to `NaivePromiseResolution` / `ShorteningUnsafe` / `EJavaFlush` (raw emission) and `OpFlushProtocol` (full flush handshake). | No |
-| `RemotePromise` (3-party listeners) | Yes — `op:resolve(targetRefId, desc:handoff-give(_, R'.resolverPeer, _, _))` carrying a Promise cap (Phase B). Gated to `NaivePromiseResolution` / `ShorteningUnsafe`; 3-party flush extension deferred — see `path-changes.md` §3.10. When silent, `H` drains `pa.queue` over the wire to `R'.resolverPeer` (legacy behaviour). | **Yes** |
+| `RemotePromise` (2-party listeners) | Yes — `op:resolve(targetRefId, desc:import-promise | desc:export-promise)` (Phase A + Phase C 2-party). Listener writes the result into its `RemotePromise.localResolution` and short-circuits future sends through the new promise's host. Gated to `NaivePromiseResolution` / `EJavaFlush` (raw emission) and `OpFlushProtocol` (full flush handshake). | No |
+| `RemotePromise` (3-party listeners) | Yes — `op:resolve(targetRefId, desc:handoff-give(_, R'.resolverPeer, _, _))` carrying a Promise cap (Phase B). Gated to `NaivePromiseResolution`; 3-party flush extension deferred — see `path-changes.md` §3.10. When silent, `H` drains `pa.queue` over the wire to `R'.resolverPeer` (legacy behaviour). | **Yes** |
 
 Listeners that receive `op:resolve` do **not** further propagate. They
 never `op:listen` on the new ref and never send `op:resolve` to their
@@ -470,79 +470,451 @@ for bookkeeping. If `vats[h].refs[refId].resolution = ResNone`, the
 handler just records the listener for future notification by
 `ResolverResolve`.
 
-## 9. `op:flush` — resolver-initiated, pushes upstream (locality-clean)
+## 9. `op:flush` — Ridley's draft spec (ocapn#11)
 
-Triggered when a `LocalPromise pa` at resolver `H` is about to fire
-`op:resolve(targetRefId, R')` for some `R' \in Target`. The mechanism
-below is exactly what `spec/PromiseResolution.tla`'s `OpFlushProtocol`
-policy implements; it is locality-clean (every read is the actor's own
-state or an incoming message, every state transition is driven by an
-explicit protocol message).
+The wire op that the OCapN issue thread settled on is **subscriber-side**
+in a different sense from `EJavaFlush`: the **would-be shortener** (Bob)
+sends `op:flush` to the **peer that holds the resolver** (Alice), and
+Alice — not Bob — does the local buffering during the flush window.
+Verbatim draft text (Ridley's
+[original proposal](https://github.com/ocapn/ocapn/issues/11#issuecomment-4344960376)
+plus
+[addendum](https://github.com/ocapn/ocapn/issues/11#issuecomment-4442041860)):
 
-1. `H` enumerates listeners `pa.listeners`.
-2. For each `L_i`, `H` appends `op:flush(refId)` to `channels[H][L_i]`
-   and stores `pa.flushPending = pa.listeners`.
-3. `L_i` receives `op:flush(refId)`. In a single atomic step it sets
-   `embargo = TRUE` on its `RemotePromise(H, refId)` **and** enqueues
-   `op:flush-ack(refId)` on `channels[L_i][H]`. Because that channel is
-   p2p FIFO, the ack queues behind any of `L_i`'s previously-pipelined
-   `op:deliver-only` sends for this ref — `H` is guaranteed to have
-   dequeued (and forwarded onward) every one of them before it dequeues
-   the ack. No "wait for my outbox to drain" step is needed; FIFO does
-   the work.
-4. `H` receives `op:flush-ack(refId)` from each `L_i` and removes the
-   listener from `pa.flushPending`. New `op:deliver-only` sends from
-   any `L_i` to `H` cannot arrive after the corresponding ack (FIFO),
-   so once `pa.flushPending = {}` no further pre-flush sends from
-   listeners can race into `pa.queue`.
-5. `H` drains `pa.queue` through its own kind-dispatch (which may
-   include intra-vat cascade into the resolution).
-6. `H` emits **`op:e-flush-probe(originPeer=H, originRefId=pa, refId=R')`**
-   on `channels[H][R'.targetPeer]` (action `SendTargetFlushProbe`).
-   The probe rides that channel BEHIND any of `H`'s previously-
-   forwarded `op:deliver-only` sends for this ref. `pa.flushPhase`
-   transitions `"idle" -> "out"`.
-7. `R'.targetPeer` receives the probe at its `LocalTarget` terminus
-   and emits `op:e-flush-probe-ack(originRefId=pa)` directly back on
-   `channels[R'.targetPeer][H]`.
-8. `H` receives `op:e-flush-probe-ack`; `pa.flushPhase` transitions
-   `"out" -> "acked"`. This is the only signal `H` consumes to know
-   its forwards have been processed at the target — it is an explicit
-   protocol-level ack, not an outbox-empty inference.
-9. `H` fires `SendOpResolveAfterFlush`: for each `L_i`, allocates a
-   fresh `giftId`, deposits the gift at `R'.targetPeer`
-   (`op:deposit-gift`), and appends
-   `op:resolve(L_i's-refId-for-pa, desc:handoff-give(...))` to
-   `channels[H][L_i]`. From here the 3PHO withdraw round-trip
-   (steps 3-5 of §7) plays out.
+> The `op:flush` operation is sent by the would-be shortener of a
+> promise to the peer that holds the corresponding resolver. It is the
+> first step of a shortening third-party handoff: it drains any
+> application messages already in flight on the old, longer path before
+> the handoff swings the path onto its shorter replacement, and it hands
+> the sender a fresh resolver to target the handoff at.
+>
+> ```text
+> <op:flush to-desc           ; desc:export
+>           answer-pos        ; positive integer
+>           resolve-me-desc>  ; desc:import-object | desc:import-promise
+> ```
+>
+> **Three-party scenario.** Alice holds a resolver `r` of promise `p1`,
+> previously exported to Bob. Bob holds the `desc:export` referencing
+> Alice's `r` and is about to shorten the promise via a third-party
+> handoff into Carol's vat. Carol hosts the target.
+>
+> **Bob's side (sending).** `op:flush` MUST be sent before, and not
+> concurrently with, the corresponding shortening third-party handoff.
+> Bob MUST wait for the response on `resolve-me-desc` / `answer-pos`
+> before sending the `op:deposit-gift` / `desc:handoff-give` pair.
+>
+> Fields:
+> - `to-desc`: `desc:export` referencing Alice's `r`.
+> - `answer-pos`: positive integer (or `false`) at which Bob receives
+>   the response.
+> - `resolve-me-desc`: `desc:import-object` or `desc:import-promise`
+>   that Alice will use to deliver the flush response — the new
+>   `desc:import-object` for Alice's newly-exported resolver `r'`.
+>
+> **Alice's side (receiving).** When `op:flush` arrives at the resolver
+> designated by `to-desc`, Alice MUST:
+>
+> 1. Mint a fresh local promise/resolver pair `p'` / `r'`.
+> 2. Fulfill the original resolver `r` with `p'`. This causes any
+>    further application-level sends on `p1` — which until now were
+>    leaving Alice's vat addressed at Bob — to be buffered locally
+>    inside Alice's vat, queued at `p'`.
+> 3. Export `r'` at a **new** export-table position (not the position
+>    `r` previously occupied; the new position is returned in the
+>    response).
+> 4. Deliver the flush response carrying `r'` as a `desc:import-object`,
+>    both through `resolve-me-desc` and as the resolution of the promise
+>    at `answer-pos`.
+> 5. Treat `op:flush` as an implicit `op:gc-export` for the original
+>    `r`. Bob MUST NOT continue to address messages at `r` after
+>    sending `op:flush`.
+>
+> **Use within a shortening 3-party handoff** (Alice→Bob→Carol):
+>
+> 1. Bob sends `op:flush` to Alice; creates a local promise at
+>    `answer-pos`.
+> 2. Alice mints `p'`/`r'`, fulfills `r` with `p'`, exports `r'`,
+>    sends the flush response.
+> 3. Bob waits for the response. Per-session FIFO between Alice and Bob
+>    guarantees every message Alice had sent on the Alice→Bob direction
+>    — including any pipelined messages Bob was about to forward toward
+>    Carol — has already been received at Bob.
+> 4. Bob performs a normal 3PHO of his own promise `p2`, but targets
+>    `r'` rather than `r`: `op:deposit-gift(p2)` to Carol, then
+>    `desc:handoff-give` to Alice (via the forwarded stream **or**
+>    directly on the Alice↔Bob session). Bob↔Carol session FIFO ensures
+>    Carol cannot receive the deposit until every forwarded Alice-message
+>    has already arrived at Carol.
+> 5. Alice processes the handoff-give: opens (or reuses) a session to
+>    Carol and sends `op:withdraw-gift` addressed at `r'`. The withdraw
+>    promise `p''` resolves to the deposited gift on Carol's side.
+> 6. `r'` is then resolved with `p''`. `p'` transitively resolves onto
+>    Carol's gift, and the locally-buffered messages drain to Carol over
+>    Alice↔Carol in original send order.
+>
+> **Composition over longer chains.** Each intermediate peer that wants
+> to remove itself from a chain sends `op:flush` upstream and waits for
+> the response before initiating its own 3PHO. Local buffering at every
+> upstream peer ensures no application-visible message races the path
+> switchover at any link.
+>
+> **Notes.** `op:flush` MUST be sent for **every** shortening of a
+> remote promise even when no traffic has been observed; the shortener
+> has no general way to determine pipelining. `op:flush` is **not** used
+> for local resolution events (single-vat). The flush response serves
+> three purposes simultaneously: drain signal, new resolver, implicit
+> GC of `r`.
 
-The point: by step 4, no pre-flush `op:deliver-only` traffic from any
-listener for `pa` can still be in flight on any wire to `H` (FIFO
-gives that for free); by step 8, no pre-flush forward from `H` to the
-target can still be in flight on `channels[H][R'.targetPeer]` (the
-probe-ack gives that explicitly). When each `L_i` switches to the new
-route at step 9 nothing can race it via the old route, and no peer
-ever inspected another peer's channel state to reach that conclusion.
+Full draft is mirrored at
+[`kumavis/ocapn` fork — `notes/op-flush-spec.md`](https://github.com/kumavis/ocapn/blob/claude/ocapn-message-ordering-WNRFV/notes/op-flush-spec.md).
 
-**Per-node propagation (not Ridley cascade).** In this spec, each peer
-enters the flush handshake only when **its own** predicates hold
-(`fireOpFlush`, `flushPhase`, embargo). `ListenersWitnessPipelined`
-(`pipelinedListeners` on the resolver's `LocalPromise`) gates
-**EJavaFlush** 3-party emission only; **OpFlushProtocol**
-always `op:flush` listeners before `op:resolve` for covered promises.
-No peer relays an incoming `op:flush` downstream as a separate
-cascade step. Multi-hop shortening uses `RepropagatePromiseShorten`
-(`EnableRepropagate`) so each intermediate hop runs the same local
-resolver/listener machinery when it learns a downstream resolution —
-not by reading another peer's channel state. This differs from Ridley's
-wire-level `op:flush(resolver-desc)` cascade (Alice→Bob→Carol); see
-§10.4 and [`path-changes.md`](path-changes.md) §3.10–3.11.
+### 9.1 The missing trigger: resolve-to-remote-value
 
-**Promise-shaped resolutions (Phase C).** `fireOpFlush` also covers
-3-party promise shortening (`OpFlushCoversPromise` — no `fresh` gate).
-`SendTargetFlushProbe` /
-`SendOpResolveAfterFlush` follow the same local gates so probes do not
-fire without a preceding local `op:flush`.
+Ridley's draft frames `op:flush` exclusively in terms of *shortening
+third-party handoffs* — Alice→Bob→Carol, where Bob (the would-be
+shortener) pulls the flush before initiating a 3PHO into Carol. The
+draft is precise about that one scenario but doesn't generalise: the
+trigger condition is "Bob is about to shorten via handoff," not "a
+resolution path is about to change shape."
+
+The hazard `op:flush` is supposed to neutralise — *path-changes
+racing in-flight traffic on the old path* — exists for **any**
+resolution where the target value sits on a different machine than
+the resolver, regardless of handoffs. The
+[`MC_OpFlushProtocol_2Party_PromiseShorten`](../models/MC_OpFlushProtocol_2Party_PromiseShorten.tla)
+counterexample (see [`path-changes.md`](path-changes.md) §4.7) is a
+minimal witness:
+
+- vatA hosts `r=2` (`LocalPromise`). vatA resolves `r=2` to a target
+  on vatB (`desc:export-target(refId=3)`). No handoff. No 3PHO.
+- vatA's listener for `r=2` is vatB. vatA emits
+  `op:resolve(2, desc:export-target(3))` to vatB.
+- vatB receives the resolve and installs `r=2.localResolution =
+  ResRef(vatB, 3)`. The chain `r=1 → vatA:r=2 → vatB:r=3` closes at
+  vatB: new sends on `r=1` cascade-shortcut to a vatB-local delivery
+  instead of taking the wire round-trip vatB→vatA→vatB.
+- Old long-path traffic (`r=1` sends vatB had already forwarded to
+  vatA on `r=2`) races the new short-path traffic (`r=1` sends that
+  arrive after the resolve install and shortcut directly).
+- Ridley's `InitiateFlush` cannot fire: no peer holds a `RemotePromise`
+  whose `localResolution` points to a third party. The trigger
+  condition simply isn't satisfied for this race.
+
+**Proposed broader trigger.** `op:flush` should fire whenever a peer
+resolves a `LocalPromise` to a value whose host is a different machine,
+not only on handoff-shortenings. Concretely:
+
+> When peer X is about to emit `op:resolve` for a `LocalPromise r`
+> whose resolution's target peer is ≠ X, X first runs the flush
+> handshake (with each listener whose dispatch path through `r` will
+> change), and only emits `op:resolve` after the handshake completes.
+
+The handoff-shortening case is one instance of this; the trace above
+is another. Under the broader trigger, vatA at the `ResolverResolve`
+step fires `op:flush-resolver` to vatB before emitting `op:resolve`.
+The per-session FIFO between vatA↔vatB then sequences vatA's pre-resolve
+pipelined sends before the resolve install at vatB, so the cascade
+shortcut at vatB only opens after the pre-flush traffic has been
+forwarded onward.
+
+#### Implementation (this spec)
+
+This spec implements the broader trigger with two cooperating wire
+ops and a listener-side embargo:
+
+- `op:flush(targetRefId)` — sent by the resolver-holder to each
+  listener whose dispatch path through the resolving promise will
+  change.
+- `op:flush-ack(targetRefId)` — sent by the listener back to the
+  resolver-holder after the embargo is set.
+
+State plumbing reuses two existing `RefEntryType` fields:
+
+- `LocalPromise.flushPending` — listeners we await acks from on the
+  resolver side. When `ResolverResolve` fires for a target on a
+  remote host, the policy hook `PolicyResolverInitiatedFlush` diverts
+  the immediate-notify path: resolution is recorded, `flushPending`
+  is set to the listener set, and `op:flush` is enqueued on each
+  listener's outbox; `notified` stays `FALSE`. When the last ack
+  arrives, `ReceiveOpFlushAck` fires the deferred `op:resolve` via
+  the shared `AppendResolveNotifications` helper.
+- `RemotePromise.embargo` — populated on the listener side by
+  `ReceiveOpFlush`: `embargo := embargo ∪ {resolver}`. Combined with
+  `PolicyRouteHoldsOnEmbargo = TRUE` for OpFlushProtocol, any
+  `Route` through this `RemotePromise` (or any chain that recurses
+  through it) returns `"hold"` and pushes the message into the
+  ref's `pending` queue. The post-flush `op:resolve` clears the
+  embargo via Core's existing install branch (`entry.embargo \
+  {from}`); `ProcessHold` then drains `pending` in arrival order
+  via the new resolution's cascade.
+
+The old shortener-pull `InitiateFlush` action and the 3-field
+`op:flush(toDescRefId, answerPos, resolveMeRefId)` wire op were
+deleted; the broader resolver-side trigger subsumes them.
+
+- `LocalPromise.queue` (resolver-side) — atomically drained by
+  `ResolverResolve` when `fireResolverFlush` is TRUE. The drain is
+  a strict-sequencing primitive, not a buffering one: any message
+  buffered at `r.queue` while `r` was unresolved gets routed onto
+  the new path **as part of the same `ResolverResolve` action** that
+  emits `op:flush`, so the drained messages occupy outbox positions
+  *before* any subsequent `PeerSend` from the resolver on the same
+  channel.
+
+#### Why the queue drain is non-optional (FIFO-critical)
+
+Without the atomic drain, the race is:
+
+1. Some downstream peer forwards an `op:deliver-only` to the
+   resolver on `r` while `r` is unresolved (Core's
+   `ReceiveNetwork` `enqueue-pending` branch lands it in
+   `r.queue`).
+2. The resolver later fires `ResolverResolve`. Under the broader
+   trigger this enqueues `op:flush` on `channels[self][listener]`
+   but does *not* touch `r.queue`.
+3. After the flush-ack returns, the resolver emits `op:resolve` to
+   the listener. Per-channel FIFO means `op:resolve` arrives at the
+   listener after any `op:flush` and after any earlier `PeerSend`,
+   but `r.queue` is still sitting at the resolver, waiting for
+   `ProcessPending` to fire.
+4. `ProcessPending` and `PeerSend` are independent actions; TLC
+   freely interleaves them. If a `PeerSend` fires before
+   `ProcessPending`, the new outbound message enters
+   `channels[self][listener]` ahead of the queue drain. At the
+   listener the new message arrives after `op:resolve` (so the
+   listener's cascade is fully resolved by then) and
+   cascade-shortcuts to the LocalTarget — while the older buffered
+   message, still draining, takes the longer cascade through the
+   listener's chain. FIFO at the LocalTarget is broken.
+
+The drain in `ResolverResolve` closes the race by binding the queue
+to be flushed onto the channel atomically with the flush emission.
+Calls **must** drain in the order they were buffered, and they must
+land in the outbox before the resolver's next outbound message;
+splitting the queue drain into a separate enabled action (the
+existing `ProcessPending` shape) is FIFO-unsafe whenever the
+resolver subsequently pipelines more sends.
+
+The drain helper is `Core!DrainResolveQueueRec`: it folds over
+`r.queue` calling `Core!ApplyRoute` per message with a precomputed
+`Route(self, res.refId)`. Locality contract upheld: all reads via
+`LocalRef(self, _)`; all writes scoped to `vats[self].refs[_]` and
+`channels[self][_]`. See `spec/Core.tla` for the implementation.
+
+#### Broader trigger extended to promise-shaped resolutions
+
+The atomic queue drain alone fixes the 2-party 2-chain race, but
+3-party cases involve a second hazard: the chain of resolutions
+spans multiple links, and the resolver-side flush at one link
+doesn't close the race at the next. Specifically, in the 3-party
+MC `MC_OpFlushProtocol_3Party_PromiseShorten`:
+
+- vatB's resolution of `r=1` (Promise → `ref(vatC, 2)`) is *also* a
+  resolve-to-remote-value, but without
+  `PolicyEmitsPromiseShortenNotify` set, no `op:flush` fires for it
+  at all.
+- vatC's resolution of `r=2` (Target → `ref(vatC, 3)`, with the
+  target on self) takes the immediate-notify path — but
+  `r=2.queue` (vatC's LocalPromise queue) accumulated `seq=1` via
+  the chain cascade, and that queue drains via `ProcessPending`
+  later, racing with `seq=2`'s wire delivery to vatC's LocalTarget.
+
+The full fix:
+
+- **Drop `isTarget` from `fireResolverFlush`.** The broader trigger
+  fires for any resolve-to-remote-value, target-shaped or
+  promise-shaped.
+- **Flip the promise-shorten policy hooks ON for OpFlushProtocol.**
+  `PolicyEmitsPromiseShortenNotify`,
+  `PolicyEmitsPromiseShorten3PartyNotify`, and
+  `PolicyShortens3PartyAnywhere` all become TRUE. `ResolverResolve`
+  now emits `op:resolve` (preceded by the broader-trigger
+  `op:flush`) for promise-shaped resolutions whose target host is a
+  different peer, including the 3-party variant.
+- **Extend the atomic queue drain to the immediate-notify CASE
+  branch** (gated on `PolicyResolverInitiatedFlush`). The same
+  `DrainResolveQueueRec` helper folds over `r.queue` and routes
+  each message via the post-resolve cascade, threading
+  `channels` / `vats` / `delivered` through the fold. Non-flush
+  policies (Naive, Shortening) keep their existing race surface.
+- **Add an atomic pending drain to the op:resolve install branch.**
+  When the install clears the listener-side embargo, any messages
+  buffered in `r.pending` (held there by the listener-side
+  embargo on flush receive) get routed via the post-install
+  cascade as part of the same action — closing the race between
+  `ProcessHold` and subsequent `op:deliver-only` wire arrivals at
+  the same peer.
+
+#### FIFO outcome — full broader trigger
+
+- `MC_OpFlushProtocol_2Party_PromiseShorten`: **PASS**
+  (333 distinct / 673 generated).
+- `MC_OpFlushProtocol_3Party_PromiseShorten`: **PASS**
+  (319 / 785). Previously a violation; the broader trigger plus
+  immediate-notify drain fixes the 3-party race.
+- `MC_OpFlushProtocol_2Party_SameVatListener`: unchanged (35 / 57).
+- All non-OpFlushProtocol MCs keep their previous outcomes and
+  identical state counts.
+- `MC_OpFlushProtocol_TribbleFourWay`: **PASS** (566 distinct /
+  1391 generated). Previously a violation. The fix is a one-conjunct
+  gate on `RepropagatePromiseShorten` (Phase D): re-propagation of a
+  downstream shortening to `chainR`'s upstream listeners is held off
+  until `chainR`'s own flush handshake has completed
+  (`LocalRef(self, chainR).flushPending = {}`). Without the gate the
+  re-propagation emitted an `op:resolve` to the listener *before* the
+  flush-ack of the `op:flush` started by `chainR`'s `ResolverResolve`
+  came back — the "resolve mid-flush" anomaly. Letting the listener
+  switch to the short path only after the flush-ack returns (which is
+  FIFO-after the in-flight long-path send on that channel) closes the
+  race in this three-peer co-terminal topology. The gate is a pure
+  local read-guard: it adds no embargo, no wire op, and no cross-peer
+  read (`flushPending` is `self`'s own resolver-side field). Note the
+  earlier expectation that a cross-channel race would survive the gate
+  did **not** materialise here — the listener-side embargo plus the
+  withdraw-gift round-trip causally orders the long-path forward ahead
+  of the short-path send in every interleaving TLC explored.
+- `MC_OpFlushProtocol_4Party`: still violates (faithful linear-chain
+  limitation). This is the head + 3-distinct-host length-3 linear
+  chain (`EnableRepropagate = FALSE`, so the gate above does not
+  apply). It replaces the former 5-peer `MC_OpFlushProtocol_4Chain`
+  (length-4): the canonical Tribble four-way is itself only
+  four-party, so the extra hop added state-space cost without
+  exercising new structure. The 4-party model reproduces the same
+  `EndToEndRefFIFO` violation as a much smaller, faster witness (the
+  counterexample lands at ~12k generated states vs the 5-peer model
+  still climbing past 35k). The violation is the
+  shortener-pipelines-into-local-queue-ahead-of-wire-forward hazard,
+  not a re-propagation issue.
+
+The complete `OpFlushProtocol` design now consists of:
+
+1. **Broader trigger** (resolver-side). Fires when the resolver
+   resolves a `LocalPromise` to any value (target or promise) on a
+   different machine.
+2. **Listener-side hold as a binder `LocalPromise`** on `op:flush`
+   receive. The listener redirects its `RemotePromise` mirror's
+   `localResolution` to a fresh unresolved binder `LocalPromise`;
+   future sends then queue on the binder by the ordinary
+   unresolved-promise rule — no bespoke `embargo` set, `Route` `"hold"`
+   tag, or `ProcessHold` (`PolicyRouteHoldsOnEmbargo = FALSE`). The
+   `op:resolve` install resolves the binder and drains its queue. See
+   `notes/locality-contract.md` §2.1.
+3. **Atomic resolver-side queue drain** in `ResolverResolve` (both
+   the flush branch and the immediate-notify branch under
+   `PolicyResolverInitiatedFlush`).
+4. **Atomic listener-side pending drain** in the `op:resolve`
+   install branch.
+5. **Re-propagation flush gate** (Phase D). `RepropagatePromiseShorten`
+   only fires once `chainR`'s own flush handshake has drained
+   (`flushPending = {}`), so a learned downstream shortening is never
+   forwarded to upstream listeners while `chainR`'s `op:flush` is
+   still outstanding. Closes the "resolve mid-flush" race that the
+   `MC_OpFlushProtocol_TribbleFourWay` trace exposed.
+
+Each piece addresses a specific FIFO hazard; together they
+mechanically eliminate the path-changes-racing-in-flight traffic
+class of failures.
+
+#### Closing the 4-party linear violation: explored and rejected
+
+`MC_OpFlushProtocol_4Party` still violates `EndToEndRefFIFO`, and the
+violation is a **cross-channel convergence race**: the earlier message
+(eagerly forwarded down the chain at resolve time) and the later
+message (sent by the head after it switches to the shortened path)
+reach a convergence node on **two different inbound channels**, which
+per-session FIFO cannot order. Several resolver/listener-side tweaks
+were prototyped and do **not** close it:
+
+- **Defer the resolution install + queue drain to flush-ack.**
+  Regresses the *2-party* case: removing the atomic drain reintroduces
+  the "queue drain is non-optional" race above — a later, locally-held
+  (binder) message folds into the downstream queue *ahead* of an
+  earlier message still completing its A→B→A round-trip. Does not fix
+  4-party either.
+- **Defer only the post-flush resolution *notification*.** This is
+  already the baseline (`ResolverResolve` sets `notified = FALSE` under
+  a flush; `ReceiveOpFlushAck` emits the `op:resolve` at ack time). No
+  change to make; 4-party still violates.
+- **Notify the listener with the *deeper-known* resolution** (so it
+  shortcuts straight to the terminal host instead of the next hop). The
+  correct mechanism is `RepropagatePromiseShorten` (valid descriptors;
+  a naive value-chase instead produces an invalid descriptor →
+  `Route` `deadEnd`). Enabling re-propagation on the 4-party chain
+  still **violates** (≈14k states, nm=2): a deeper resolution only
+  *moves* the convergence point (e.g. vatC → vatD), it never removes
+  it.
+
+Conclusion: no resolver-side resolution choice closes this. Eliminating
+it requires an **end-to-end / terminal-confirmed barrier** — the
+listener must not commit the shortened path until the long-path traffic
+has drained at the convergence/terminal node — or not shortening at
+all. Tracked as future work; the per-link `OpFlushProtocol` design
+above is the landing state.
+
+### 9.2 Implementation in this spec
+
+The `OpFlushProtocol` routing policy in
+[`spec/Core.tla`](../spec/Core.tla)
+implements the protocol above faithfully — no compensating mechanisms.
+
+- **Trigger.** Action `InitiateFlush` fires when peer X holds a
+  `RemotePromise` whose `localResolution.peer` is a third party
+  (neither X nor the resolver-holder), gated by `EnableShorten`. This
+  is the moment X has learned its local promise resolved further along
+  the chain and could now usefully shorten itself out.
+- **Wire op.** `OpFlush(toDescRefId, answerPos, resolveMeRefId)`
+  carries the three Ridley fields. `op:flush-ack` is **not** used (the
+  response IS the ack, per §9 step 4).
+- **Resolver-holder side.** The `op:flush` receive branch mints a
+  fresh `LocalPromise` `p'` via `nextRefId`; sets
+  `vats[self].refs[r].resolution = ResRef(self, p')` (the standard
+  intra-vat queue cascade then absorbs future sends at `p'`); replies
+  with `op:resolve(resolveMeRefId, desc:import-promise(p'))` on
+  `channels[self][from]`. A second concurrent flush against the same
+  `r` is silently dropped — the intra-vat cascade can only fulfill `r`
+  once; documented as a v0 limitation.
+- **No probe.** `op:e-flush-probe` / `op:e-flush-probe-ack` are
+  EJavaFlush-only. Under OpFlushProtocol, the drain proof rests on
+  per-session FIFO (Alice↔Bob) and the gift-table ordering at the
+  eventual target (when the subsequent 3PHO fires).
+- **No resolver-pushed flush.** Under OpFlushProtocol,
+  `ResolverResolve` now behaves like Naive: immediate `op:resolve` via
+  `AppendResolveNotifications`. If a recipient wants to shorten, it
+  later fires `InitiateFlush` against its own `RemotePromise`.
+
+**FIFO outcome.** The model shows that **Ridley's proposal as
+specified does NOT preserve `EndToEndRefFIFO`** in the chain-shaped
+topologies this spec exercises. Four of the five OpFlushProtocol MCs
+(`MC_OpFlushProtocol_{2Party_PromiseShorten, 3Party_PromiseShorten,
+4Party (then the 5-peer _4Chain), TribbleFourWay}`)
+violate FIFO under faithful Ridley; only
+`MC_OpFlushProtocol_2Party_SameVatListener` passes (its topology has no
+shortening race). (Superseded by §9.1: under the broader trigger plus
+the atomic drains and the re-propagation flush gate, the two
+`_PromiseShorten` MCs and `TribbleFourWay` now pass; only the `4Party`
+linear chain still violates.) See
+[`path-changes.md`](path-changes.md) §4.7 for the counterexample trace
+and root-cause analysis.
+
+The gap is more basic than the Tribble four-way limitation: a
+shortener peer that has installed `localResolution` can pipeline new
+sends into its newly-routed local queue *before* a still-in-flight
+wire-forward from the resolver-holder arrives. The two sources feeding
+the receiver's local queue (own PeerSend vs. wire delivery) are not
+ordered by anything in Ridley's protocol. The previous
+resolver-pushed implementation's `op:e-flush-probe` happened to fix
+this — but the probe is EJavaFlush's mechanism, not Ridley's, and
+adding it back would be a compensating mechanism the user explicitly
+directed against.
+
+The implication: Ridley's draft works for the specific Alice→Bob→Carol
+scenario described in §9 (where Bob is the only sender), but a future
+revision needs an additional mechanism — either a shortener-side
+defer on the new path until the chain has settled, a probe-like
+end-to-end signal, or the broader resolve-to-remote-value trigger
+described in [§9.1](#91-the-missing-trigger-resolve-to-remote-value) —
+to generalize to multi-hop chains.
 
 ## 10. `EJavaFlush` — subscriber-initiated, faithful DelayedRedirector model
 
@@ -593,7 +965,7 @@ processed at the eventual target before the ack returns.
 
 ### 10.2 What the `EJavaFlush` policy in this spec actually does
 
-`spec/PromiseResolution.tla`'s `"EJavaFlush"` is a faithful model of
+`spec/Core.tla`'s `"EJavaFlush"` is a faithful model of
 DelayedRedirector. It tracks the per-`RemotePromise` `fresh` sticky bit,
 implements the fast-path predicates locally, and emits an end-to-end
 flush sentinel + ack on the slow path.
@@ -668,6 +1040,67 @@ protocol messages (the probe-ack). No action infers "the recipient has
 processed" from "my outbox is empty" — channel state is not used as a
 signal in either policy.
 
+#### 10.2.1 Divergences from literal e-on-java DelayedRedirector
+
+The `EJavaFlush` policy is a **faithful abstraction** of DelayedRedirector
+for the purposes of the FIFO safety property, but it is not byte-for-byte
+the same protocol. The notable departures:
+
+- **Ack channel is direct (Disembargo-flavored).** In e-on-java, the
+  slow path emits `E.sendOnly(myOptProxy, "__whenMoreResolved", rdr)` —
+  a second `__whenMoreResolved` on the *original* proxy. The reply
+  reaches the redirector via whatever CapTP transport handles the
+  answer-position resolution, which under E typically retraces the
+  chain via answer pipelining and only collapses to direct over time.
+  This spec instead emits `op:e-flush-probe-ack` on
+  `channels[terminalPeer][originPeer]` — a direct edge — which is what
+  Cap'n Proto's `Disembargo` does. The safety argument is the same
+  (probe rides the same FIFO as prior sends, ack is causally after the
+  probe's processing at the terminal), but the literal e-on-java wire
+  pattern is not what's modelled.
+- **`isDeepFrozen(target)` fast-path is not modelled.** E's
+  `DelayedRedirector.run` accepts three fast-path predicates:
+  `isFresh()`, `sameConnection(target)`, and `isDeepFrozen(target)`.
+  This spec implements the first two. A `DeepFrozen` target needs no
+  embargo (order irrelevant on a value-only ref), so omitting it makes
+  the slow path fire when e-on-java would not. Safety-preserving over-
+  approximation (extra probes, never fewer); zero impact on FIFO
+  outcomes.
+- **`sameConn` is restricted to `desc:import-target`.** E-on-java's
+  `EProxyHandler.sameConnection(target)` is shape-agnostic — same comm
+  system, same remote vat. This spec gates `sameConn` to **Target
+  descriptors only** and excludes `desc:import-promise` /
+  `desc:export-*`. The justification (`path-changes.md` §3.10): under
+  promise-shaped shortening the existing chain may include an
+  intermediate `LocalPromise` queue that the new direct path can
+  bypass, surfacing an ordering race a literal port of `sameConnection`
+  would not catch. This is **stricter** than e-on-java — a faithful
+  abstraction that preserves FIFO at the cost of forcing the slow path
+  in scenarios e-on-java would not have generated.
+- **`RepropagatePromiseShorten` is model machinery, not a DelayedRedirector
+  feature.** DelayedRedirector is purely subscriber-side; no peer
+  forwards resolution state to anybody else. The spec invents
+  `RepropagatePromiseShorten` (Phase D, `EnableRepropagate`) plus the
+  `notified` / `repropNotified` bookkeeping pair specifically to *set
+  up* the Tribble four-way scenario in a finite TLA+ model. The two
+  flags are deliberately distinct: `notified` is set by the original
+  `ResolverResolve`; `repropNotified` tracks the re-propagation wave.
+  Collapsing them would suppress the second `op:resolve` that carries
+  the deeper target — which is the whole point of shortening. This is
+  not a behavior DelayedRedirector rejects; it is machinery for
+  generating scenarios DelayedRedirector itself never internally
+  produces.
+- **Tribble four-way limitation is faithfully inherited.** Cap'n
+  Proto's `rpc.capnp` documents the rule "once promise `P` has been
+  resolved to remote `R`, all further messages received addressed to
+  `P` will be forwarded strictly to `R`, even if `R` itself resolves
+  further" — and notes that this is the mitigation a `DelayedRedirector`
+  implementation does *not* enforce. The spec's `MC_EJavaFlush_TribbleFourWay`
+  violates `EndToEndRefFIFO_MC` for exactly this reason, with `EnableRepropagate`
+  allowing the chain to shorten through the intermediate hop. The
+  violation is the documented expected outcome — the spec is **modelling
+  the bug**, not the fix.
+
 ### 10.3 Why a local "outbox empty" signal is insufficient (3-chain witness)
 
 Any implementation that lifts the slow-path embargo by inspecting `L`'s
@@ -704,7 +1137,7 @@ in-flight seq=1. When vatD receives the probe, it emits
 been delivered at vatD. vatB lifts the embargo, drains
 `vats[vatB].refs[2].pending`, and seq=2 follows in order.
 
-`MC_EJavaFlush_3Chain` passes with the current design.
+`MC_EJavaFlush_4Party` passes with the current design.
 
 ### 10.4 Tribble crossing-shorten (modelled; per-node flush only)
 
@@ -720,16 +1153,24 @@ path it traverses.
 `EndToEndRefFIFO_MC` as expected — the spec faithfully captures the
 DelayedRedirector limitation. [`MC_OpFlushProtocol_TribbleFourWay`](../models/MC_OpFlushProtocol_TribbleFourWay.tla)
 (three-peer co-terminal, `EnableRepropagate = TRUE`, `NumMessages = 2`)
-**passes** `EndToEndRefFIFO_MC`: resolver-initiated `op:flush` to
-listeners (no `fresh` gate) plus `RepropagatePromiseShorten` suffices
-on this topology without Ridley's explicit Bob→Carol flush relay.
+**passes** `EndToEndRefFIFO_MC` (566 distinct / 1391 generated):
+resolver-initiated `op:flush` to listeners (no `fresh` gate) plus
+`RepropagatePromiseShorten` suffices on this topology without Ridley's
+explicit Bob→Carol flush relay — **provided** re-propagation is gated
+on the chain promise's own flush handshake having drained
+(`flushPending = {}`; see §9.1 design item 5). Without that gate the
+re-propagation emits `op:resolve` to the listener mid-flush (before the
+flush-ack returns) and FIFO is violated.
 
-The Ridley `op:flush` proposal addresses the limitation by inverting
-flush direction and (on the wire) cascading `op:flush` along the chain.
-This spec's `OpFlushProtocol` models Ridley's **three-party** resolver→
-listener handshake only, with probe + ack underneath (§11). See
-[`path-changes.md`](path-changes.md) §3.10–3.11 and the
-[ocapn#11 thread](https://github.com/ocapn/ocapn/issues/11).
+Ridley's `op:flush` proposal addresses the limitation by inverting the
+direction of the handshake (the shortener, not the resolver, sends
+`op:flush`) and minting a fresh resolver at the upstream peer. This
+spec's `OpFlushProtocol` is a separate resolver-pushed variant — see
+§9.2 for the structural differences and the verbatim Ridley draft at
+§9. The "OpFlushProtocol passes Tribble" claim is FIFO-safety only;
+liveness (`EventualDelivery`) is not checked on the Tribble MC because
+re-propagation + per-node flush can stutter under weak fairness while
+FIFO still holds.
 
 ## 11. Worked example trace (4-chain, both flush protocols)
 

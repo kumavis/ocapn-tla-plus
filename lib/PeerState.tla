@@ -3,7 +3,7 @@
 (* Per-peer state, bundled into a single `vats` VARIABLE indexed by peer.  *)
 (* This bundling is the structural half of Option C (the locality          *)
 (* refactor; see ../notes/locality-contract.md section 7): every per-peer  *)
-(* write in spec/PromiseResolution.tla is of the form                       *)
+(* write in spec/Core.tla is of the form                       *)
 (*   vats' = [vats EXCEPT ![self].<slot>[...] = ...]                       *)
 (* which makes it impossible at the EXCEPT-key level for one peer's       *)
 (* action to mutate another peer's state.  A reviewer can grep for         *)
@@ -80,7 +80,7 @@ PeerStateTypeOK(DeliveredEntry, NumMessagesArg, MaxRefIdArg, Messages) ==
 
 ----------------------------------------------------------------------------
 (* Per-actor locality accessors.  Every protocol action in
-   spec/PromiseResolution.tla binds its acting peer as `self` and reads
+   spec/Core.tla binds its acting peer as `self` and reads
    its own slice through these operators.  Reviewers can grep for
    bare `vats[X]` outside accessor definitions to spot any direct
    cross-peer reads.  See ../notes/locality-contract.md sections 2-3
